@@ -153,7 +153,7 @@ def compresses_well(file: BinaryReadableFile) -> bool:
     return (len(gzip.compress(content, 5)) < 0.7 * len(content))
 
 @contextmanager
-def time_limited_flock_attempt(fileobj, timeout_seconds, *, timestep=0.1):
+def backup_flock(fileobj, timeout_seconds, *, timestep=0.1):
     """Create a context manager with an attempted shared lock on a file
     
     Logs a warning if the advisory file lock cannot be obtained.
@@ -188,4 +188,4 @@ def time_limited_flock_attempt(fileobj, timeout_seconds, *, timestep=0.1):
 
 @namedtuple_def
 def LockStatus():
-    return 'locked'
+    return 'obtained'

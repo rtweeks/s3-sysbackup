@@ -34,7 +34,7 @@ from .fs import (
     get_permissions,
     linkchain,
     storage_id,
-    time_limited_flock,
+    backup_flock,
 )
 from .utils import (
     BackupFacilitator,
@@ -105,8 +105,8 @@ class Quilter(BackupFacilitator):
             md5_hash = S3IntegrityHasher()
             file_hasher = FileHasher(sha256hash, md5_hash)
             with self._open_target_file(fpath) as origf:
-                with time_limited_flock(origf, self.lock_timeout) as read_lock:
-                    locked_for_read = read_lock.locked
+                with backup_flock(origf, self.lock_timeout) as read_lock:
+                    locked_for_read = read_lock.obtained
                     while True:
                         buf = origf.read(256 * 1024)
                         if not buf:
