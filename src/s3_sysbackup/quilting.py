@@ -34,6 +34,7 @@ from .fs import (
     get_permissions,
     linkchain,
     storage_id,
+    time_limited_flock,
 )
 from .utils import (
     BackupFacilitator,
@@ -92,64 +93,64 @@ class Quilter(BackupFacilitator):
         
         self._include_directories(fpath)
         
-        # Determine if gzip will help
-        with self._open_target_file(fpath) as f:
+        # Make a local, temporary copy of the file (holding a flock on the source for the duration)
+        with ExitStack() as resources:
+            f = resources.enter_context(TemporaryFile())
+            
+            # TODO: Try to use reflink to make a copy-on-write (i.e. lightweight)
+            # copy of the file to work with instead of an actual file-copy operation
+            with self._open_target_file(fpath) as origf:
+                with time_limited_flock(origf, 2) as read_lock:
+                    locked_for_read = read_lock.locked
+                    shutil.copyfileobj(origf, f)
+            f.seek(0)
+            
             compress_content = compresses_well(f)
             f.seek(0)
             
-            # Compute SHA256 and MD5 of fpath
             sha256hash = hashlib.sha256()
-            FileHasher(sha256hash).consume(f, 1 << 20)
-            
+            md5_hash = S3IntegrityHasher()
+            FileHasher(sha256hash, md5_hash).consume(f, 1 << 20)
+            f.seek(0)
             content_key = "content/" + sha256hash.hexdigest()
             _log.info("content key for %r: %s", fpath, content_key)
-        
-        object_loc = dict(Bucket=self.bucket, Key=content_key)
-        # Try to extend the Object Lock on the content key
-        try:
-            update_retention_kwargs = dict(
-                **object_loc,
-                Retention=self._retention_args(),
-            )
-            _log.debug("object retention update kwargs: %r", update_retention_kwargs)
-            self.s3.put_object_retention(**update_retention_kwargs)
-            _log.info("object retention set for s3://%s/%s; no upload needed", self.bucket, content_key)
-        except AwsError as e:
-            # Sadly, we can't test for a "NoSuchKey" error as S3 sometimes returns an "AccessDenied" instead
             
-            # If extending the Object Lock on the content key failed, upload the content
-            _log.info("preparing for content upload to s3://%s/%s", self.bucket, content_key)
-            extra_args = {}
-            extra_args.update(self._retention_args(prefix='ObjectLock'))
-            with ExitStack() as resources:
+            object_loc = dict(Bucket=self.bucket, Key=content_key)
+            
+            try:
+                update_retention_kwargs = dict(
+                    **object_loc,
+                    Retention=self._retention_args(),
+                )
+                _log.debug(
+                    "object retention update kwargs: %r",
+                    update_retention_kwargs,
+                )
+                self.s3.put_object_retention(**update_retention_kwargs)
+                _log.info(
+                    "object retention set for s3://%s/%s; no upload needed",
+                    self.bucket,
+                    content_key
+                )
+            except AwsError as e:
+                # Sadly, we can't test for a "NoSuchKey" error as S3 sometimes returns an "AccessDenied" instead
                 
                 if compress_content:
-                    _log.info("gzip compressing content from %r", fpath)
-                    f = resources.enter_context(TemporaryFile())
-                    with self._open_target_file(fpath) as origf:
-                        shutil.copyfileobj(
-                            origf,
-                            gzip.GzipFile(None, 'wb', fileobj=f)
+                    _log.info("gzip-compressing content from %r", fpath)
+                    zf = resource.enter_context(TemporaryFile())
+                    shutil.copyfileobj(f, gzip.GzipFile(None, 'wb', fileobj=zf))
+                    if _log.isEnabledFor(logging.INFO):
+                        sizes = (zf.tell(), f.tell())
+                        ratio = 1 - (sizes[0] / sizes[1])
+                        _log.info(
+                            "compressed %d byes to %d bytes (%.1f%%)",
+                            *sizes,
+                            ratio * 100,
                         )
-                        if _log.isEnabledFor(logging.INFO):
-                            sizes = (f.tell(), origf.tell())
-                            ratio = 1 - (sizes[0] / sizes[1])
-                            _log.info(
-                                "compressed %d bytes to %d bytes (%.1f%%)",
-                                *sizes,
-                                ratio * 100,
-                            )
-                    f.seek(0)
-                    extra_args.setdefault('Metadata', {}).update({
-                        'storage-encoding': 'gzip',
-                    })
-                else:
-                    f = resources.enter_context(self._open_target_file(fpath))
+                    f.close()
+                    zf.seek(0)
+                    f = zf
                 
-                md5_hash = S3IntegrityHasher()
-                FileHasher(md5_hash).consume(f, 1 << 20)
-                f.seek(0)
-                # WON'T BE ABLE TO USE upload_file OR upload_fileobj BECAUSE THEY DON'T SUPPORT Object Lock
                 _log.info(
                     "storing file content for %r at s3://%s/%s",
                     fpath,
@@ -166,12 +167,15 @@ class Quilter(BackupFacilitator):
         
         # Accumulate this file into the manifest
         _log.info("incorporating file %r in manifest", fpath)
-        self.manifest[fpath] = File(
+        file_rec = File(
             get_ownership(fpath),
             get_permissions(fpath),
             content_key,
             storage_id(fpath),
         )
+        if not locked_for_read:
+            file_rec.unlocked_copy = True
+        self.manifest[fpath] = file_rec
     
     def get_manifest_jsonl_lines(self, *, as_str: bool = True):
         for path in sorted(self.manifest):
@@ -250,6 +254,8 @@ class Directory:
         return {'typ': 'd', **self.ownership, **self.perms_dict}
 
 class File:
+    unlocked_copy = False
+    
     def __init__(self, ownership, perms_dict, content_key, storage_id):
         super().__init__()
         self.ownership = ownership
@@ -263,10 +269,13 @@ class File:
     
     @property
     def json_data(self):
-        return {
+        result = {
             'typ': 'f',
             **self.ownership,
             **self.perms_dict,
             'dat': self.content_key,
             'id': self.storage_id,
         }
+        if self.unlocked_copy:
+            result.setdefault('w', []).append('unlocked-copy')
+        return result

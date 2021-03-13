@@ -159,6 +159,13 @@ class Saver:
     ``id`` of file entries to the first path at which that file object was
     restored; if the same ``id`` is later encountered, create a hard link to
     that first path at the new path.
+    
+    Because Linux does not strongly support mandatory file locks and because
+    a partially faulty backup is better than no backup at all, an advisory
+    read lock is attempted on the file at the time it is copied for backup.
+    If the read lock timeout expires before the file can be locked, the backup
+    copy continues anyway with a warning and a notation of ``unlocked-copy``
+    under the ``w`` key in the manifest entry.
     """
     bucket = None
     
