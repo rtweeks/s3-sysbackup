@@ -13,6 +13,9 @@
 # limitations under the License.
 
 """Tools for inspecting the filesystem tree"""
+from contextlib import contextmanager
+import errno
+import fcntl
 import grp
 import gzip
 import hashlib
@@ -21,6 +24,7 @@ import os, os.path
 import pwd
 import stat
 import subprocess as subp
+import time
 from typing import Iterable, List, Tuple, Union as OneOf
 import unicodedata
 import warnings
@@ -34,6 +38,7 @@ except ImportError:
 
 from .utils import (
     _debug_log,
+    namedtuple_def,
 )
 
 import logging
@@ -146,3 +151,41 @@ def compresses_well(file: BinaryReadableFile) -> bool:
     """Determine if the data in the given binary stream compresses well"""
     content = file.read(1 << 14)
     return (len(gzip.compress(content, 5)) < 0.7 * len(content))
+
+@contextmanager
+def time_limited_flock_attempt(fileobj, timeout_seconds, *, timestep=0.1):
+    """Create a context manager with an attempted shared lock on a file
+    
+    Logs a warning if the advisory file lock cannot be obtained.
+    
+    The context value is a :class:`LockStatus` indicating whether the lock
+    was successfully obtained.
+    """
+    deadline = time.time() + timeout_seconds
+    locked = False
+    while time.time() < deadline:
+        try:
+            fcntl.flock(fileobj, fcntl.LOCK_SH | fnctl.LOCK_NB)
+            locked = True
+            break
+        except IOError as e:
+            if e.errno != errno.EAGAIN:
+                raise
+            
+            time.sleep(timestep)
+    
+    if not locked:
+        if hasattr(fileobj, 'name'):
+            _log.warning("Unable to lock %r for reading", fileobj.name)
+        else:
+            _log.warning("Unable to lock file for reading")
+    
+    try:
+        yield LockStatus(locked)
+    finally:
+        if locked:
+            fcntl.flock(fileobj, fnctl.LOCK_UN)
+
+@namedtuple_def
+def LockStatus():
+    return 'locked'
