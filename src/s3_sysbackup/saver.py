@@ -218,6 +218,7 @@ class Saver:
         self.retention_period = timedelta(
             days=config['content'].getint('days_retained', 14)
         )
+        self.lock_timeout = config['content'].getfloat('lock_timeout', 2)
         
         if self.bucket is None:
             raise Exception("no S3 bucket specified")
@@ -231,13 +232,14 @@ class Saver:
         )
         s3 = self.aws_session.client('s3')
         facilitator_kwargs = dict(
+            bucket=self.bucket,
             retention_period=self.retention_period,
             manifest_prefix='manifests/',
             s3_client=s3,
         )
         
-        snapshotter = Snapshotter(self.bucket, 'snapshots/', **facilitator_kwargs)
-        quilter = Quilter(self.bucket, **facilitator_kwargs)
+        snapshotter = Snapshotter(key_prefix='snapshots/', **facilitator_kwargs)
+        quilter = Quilter(lock_timeout=self.lock_timeout, **facilitator_kwargs)
         
         if return_tools:
             return dict(snapshotter=snapshotter, quilter=quilter)

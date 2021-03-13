@@ -70,12 +70,14 @@ class Quilter(BackupFacilitator):
     def __init__(self, bucket: str, *,
         manifest_prefix: str = '',
         s3_client=None,
+        lock_timeout=2,
         **kwargs
     ):
         super().__init__(bucket, **kwargs)
         self.manifest_prefix = manifest_prefix
         self.manifest = {}
         self.s3 = s3_client or boto3.client('s3')
+        self.lock_timeout = lock_timeout
     
     def add(self, fpath):
         _log.info("picking file at %r", fpath)
@@ -100,7 +102,7 @@ class Quilter(BackupFacilitator):
             # TODO: Try to use reflink to make a copy-on-write (i.e. lightweight)
             # copy of the file to work with instead of an actual file-copy operation
             with self._open_target_file(fpath) as origf:
-                with time_limited_flock(origf, 2) as read_lock:
+                with time_limited_flock(origf, self.lock_timeout) as read_lock:
                     locked_for_read = read_lock.locked
                     shutil.copyfileobj(origf, f)
             f.seek(0)

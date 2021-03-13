@@ -43,6 +43,7 @@ When an S3 bucket is not explicitly configured either on the `Saver` object or t
 
 | Setting | Value Description |
 | :------------- | :-------------------------------------------------------- |
+| `lock_timeout` | The number of seconds to wait for an advisory read lock on a "picked" file |
 | `days_retained` | The number of days for which content should be retained via S3's Object Lock |
 
 ## Backup Strategies
