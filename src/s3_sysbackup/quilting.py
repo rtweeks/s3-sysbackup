@@ -101,19 +101,23 @@ class Quilter(BackupFacilitator):
             
             # TODO: Try to use reflink to make a copy-on-write (i.e. lightweight)
             # copy of the file to work with instead of an actual file-copy operation
+            sha256hash = hashlib.sha256()
+            md5_hash = S3IntegrityHasher()
+            file_hasher = FileHasher(sha256hash, md5_hash)
             with self._open_target_file(fpath) as origf:
                 with time_limited_flock(origf, self.lock_timeout) as read_lock:
                     locked_for_read = read_lock.locked
-                    shutil.copyfileobj(origf, f)
+                    while True:
+                        buf = origf.read(256 * 1024)
+                        if not buf:
+                            break
+                        f.write(buf)
+                        file_hasher.update(buf)
             f.seek(0)
             
             compress_content = compresses_well(f)
             f.seek(0)
             
-            sha256hash = hashlib.sha256()
-            md5_hash = S3IntegrityHasher()
-            FileHasher(sha256hash, md5_hash).consume(f, 1 << 20)
-            f.seek(0)
             content_key = "content/" + sha256hash.hexdigest()
             _log.info("content key for %r: %s", fpath, content_key)
             

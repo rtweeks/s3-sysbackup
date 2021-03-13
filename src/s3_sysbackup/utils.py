@@ -142,12 +142,15 @@ class FileHasher:
         super().__init__()
         self.hashers = list(hashers)
     
+    def update(self, chunk):
+        for h in self.hashers:
+            h.update(chunk)
+    
     def digest_next(self, file, byte_count):
         content = file.read(byte_count)
         if len(content) == 0:
             return False
-        for h in self.hashers:
-            h.update(content)
+        self.update(content)
         return True
     
     def consume(self, file, chunksize):
