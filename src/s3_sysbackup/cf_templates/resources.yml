@@ -55,7 +55,7 @@ Resources:
             Action:
               - 's3:ListBucketVersions'
             Resource:
-              - {'Fn::Sub': "${Bucket.Arn}/*"}
+              - {'Fn::Sub': "${Bucket.Arn}"}
             Condition:
               StringLike:
                 's3:prefix':
@@ -82,8 +82,6 @@ Resources:
               StringLike:
                 'aws:PrincipalArn':
                   - {'Fn::Sub': "arn:aws:iam::${AWS::AccountId}:*"}
-              StringEquals:
-                'aws:PrincipalTag/canBackup': 'true'
       PermissionsBoundary: {Ref: BackupBucketAccessPolicy}
       Description: >-
         Role to be assumed by principals who need to store objects to S3 for backup.
@@ -149,6 +147,81 @@ Resources:
             Resource:
               - {'Fn::Sub': "${BackupRole.Arn}"}
   
+  RestoreBucketAccessPolicy:
+    # REQUIRES (on stack creation/update): CAPABILITY_IAM or CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Permissions allowed for restore role to access S3 storage
+      Path: {'Fn::Sub': "/systems/${PackageName}/"}
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:ListAllMyBuckets'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 's3:ListBucket'
+              - 's3:ListBucketVersions'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}"}
+            Condition:
+              StringLike:
+                's3:prefix':
+                  - 'manifests/*'
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}/*"}
+  
+  RestoreRole:
+    # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: {'Fn::Sub': "DataRestoreRole-${PackageName}"}
+      Path: {'Fn::Sub': "/systems/${PackageName}/"} #YAMLTIE *IAMPath
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringLike:
+                'aws:PrincipalArn':
+                  - {'Fn::Sub': "arn:aws:iam::${AWS::AccountId}:*"}
+      PermissionsBoundary: {Ref: RestoreBucketAccessPolicy}
+      Description: >-
+        Role to be assumed by principals who need to restore backed-up data
+        from S3.
+      ManagedPolicyArns:
+        - {Ref: RestoreBucketAccessPolicy}
+      Tags:
+        - Key: Package
+          Value: {Ref: PackageName}
+  
+  RestorersGroup:
+    # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::Group
+    Properties:
+      Path: {'Fn::Sub': "/systems/${PackageName}/"} #YAMLTIE *IAMPath
+      GroupName: {'Fn::Sub': "DataRestorers-${PackageName}"}
+      Policies:
+        - PolicyName: {'Fn::Sub': "AssumeRestoreRolePolicy-${PackageName}"}
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sts:AssumeRole'
+                Resource:
+                  - {'Fn::Sub': "${RestoreRole.Arn}"}
+  
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -171,6 +244,7 @@ Resources:
                 'aws:userId':
                   - {Ref: 'AWS::AccountId'}
                   - {'Fn::Sub': "${BackupRole.RoleId}:*"}
+                  - {'Fn::Sub': "${RestoreRole.RoleId}:*"}
                   # Any other user ID we want to explicitly allow
           - Sid: 'OnlyDeleteThroughCloudFormation'
             Effect: Deny
