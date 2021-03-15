@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  # Search for the IAM Role with "/systems/${PackageName}/" path prefix
+  # ('s3-sysbackup' by default) and look for the tags indicated as the value
+  # sources
+  
+  Group:
+    # Source Tag: s3-sysbackup:ExternalBackupsGroup
+    Type: String
+    Description: Friendly name of group granting necessary permissions on S3
+  
+  PermissionsBoundaryArn:
+    # Source Tag: s3-sysbackup:ExternalUserPermissionsBoundary
+    Type: String
+    Description: ARN of IAM managed policy setting permissions boundary
+
+Resources:
+  User:
+    Type: AWS::IAM::User
+    Properties:
+      Path: '/external-automation/'
+      UserName: {Ref: 'AWS::StackName'}
+      Groups:
+        - {Ref: Group}
+      PermissionsBoundary: {Ref: PermissionsBoundaryArn}
+      Tags:
+        - Key: Package
+          Value: s3-sysbackup
+        - Key: Usage
+          Value: external

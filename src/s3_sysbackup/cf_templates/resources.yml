@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  BucketName:
+    Type: String
+    Description: ""
+  
+  BucketExport:
+    Type: String
+    Description: "Name under which to export created bucket name"
+    Default: 'backup-bucket'
+  
+  PackageName:
+    Type: String
+    Description: "Uniquifying string for package"
+    Default: "s3-sysbackup"
+
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: {Ref: BucketName}
+      PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 14
+            NoncurrentVersionExpirationInDays: 1
+            Status: Enabled
+      ObjectLockEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Package
+          Value: {Ref: PackageName}
+  
+  BackupBucketAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Permissions allowed for backup role to access S3 storage
+      Path: {'Fn::Sub': "/systems/${PackageName}/"}
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:PutObject'
+              - 's3:PutObjectRetention'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}/*"}
+          - Effect: Allow
+            Action:
+              - 's3:ListBucketVersions'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}/*"}
+            Condition:
+              StringLike:
+                's3:prefix':
+                  - 'content/*'
+          - Effect: Allow
+            Action:
+              - 'cloudformation:ListExports'
+            Resource: '*'
+  
+  BackupRole:
+    # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: {'Fn::Sub': "DataBackupRole-${PackageName}"}
+      Path: {'Fn::Sub': "/systems/${PackageName}/"} #YAMLTIE &IAMPath
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringLike:
+                'aws:PrincipalArn':
+                  - {'Fn::Sub': "arn:aws:iam::${AWS::AccountId}:*"}
+              StringEquals:
+                'aws:PrincipalTag/canBackup': 'true'
+      PermissionsBoundary: {Ref: BackupBucketAccessPolicy}
+      Description: >-
+        Role to be assumed by principals who need to store objects to S3 for backup.
+      ManagedPolicyArns:
+        - {Ref: BackupBucketAccessPolicy}
+      Tags:
+        - Key: Package
+          Value: {Ref: PackageName}
+        - Key: 's3-sysbackup:ExternalUserPermissionsBoundary'
+          Value:
+            'Fn::Join':
+              - ''
+              - - {'Fn::Sub': "arn:aws:iam::${AWS::AccountId}:policy"}
+                - {'Fn::Sub': "/systems/${PackageName}/"} #YAMLTIE *IAMPath
+                - {'Fn::Sub': "ExternalBackupsUserPermissionsBoundary-${PackageName}"} #YAMLTIE &ExtUserPermBoundName
+        - Key: 's3-sysbackup:ExternalBackupsGroup'
+          Value: {'Fn::Sub': "BackupCapable-${PackageName}"} #YAMLTIE &ExtUserGroupName
+        - Key: 's3-sysbackup:Bucket'
+          Value: {Ref: BucketName}
+  
+  AssumeBackupRolePolicy:
+    # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: {'Fn::Sub': "AssumeBackupRolePolicy-${PackageName}"}
+      Path: {'Fn::Sub': "/systems/${PackageName}/"}
+      Description: >-
+        Policy to allow assumption of the backup role.
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'sts:AssumeRole'
+            Resource:
+              - {'Fn::Sub': "${BackupRole.Arn}"}
+  
+  ExternalBackupsGroup:
+    # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::Group
+    Properties:
+      Path: {'Fn::Sub': "/systems/${PackageName}/"} #YAMLTIE *IAMPath
+      GroupName: {'Fn::Sub': "BackupCapable-${PackageName}"} #YAMLTIE *ExtUserGroupName
+      ManagedPolicyArns:
+        - {Ref: AssumeBackupRolePolicy}
+  
+  ExternalBackupsUserPermissionsBoundary:
+    # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM or CAPABILITY_IAM
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Permissions boundary (i.e. maximal permissions) for backup role
+      Path: {'Fn::Sub': "/systems/${PackageName}/"} #YAMLTIE *IAMPath
+      ManagedPolicyName: {'Fn::Sub': "ExternalBackupsUserPermissionsBoundary-${PackageName}"} #YAMLTIE *ExtUserPermBoundName
+      
+      # Changing the following DOES NOT require a change to the ManagedPolicyName:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'sts:AssumeRole'
+            Resource:
+              - {'Fn::Sub': "${BackupRole.Arn}"}
+  
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: {Ref: Bucket}
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'OnlyRootAndExplicitAccess'
+            Effect: Deny
+            Principal: '*'
+            NotAction:
+              - 's3:DeleteBucket'
+              - 's3:PutBucketPolicy'
+              - 's3:DeleteBucketPolicy'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}"}
+              - {'Fn::Sub': "${Bucket.Arn}/*"}
+            Condition:
+              StringNotLike:
+                'aws:userId':
+                  - {Ref: 'AWS::AccountId'}
+                  - {'Fn::Sub': "${BackupRole.RoleId}:*"}
+                  # Any other user ID we want to explicitly allow
+          - Sid: 'OnlyDeleteThroughCloudFormation'
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - 's3:DeleteBucket'
+              - 's3:PutBucketPolicy'
+              - 's3:DeleteBucketPolicy'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}"}
+              - {'Fn::Sub': "${Bucket.Arn}/*"}
+            Condition:
+              'ForAllValues:StringNotEquals':
+                'aws:CalledVia': ['cloudformation.amazonaws.com']
+          - Sid: 'RequireObjectLockMode'
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - 's3:PutObject'
+              - 's3:PutObjectRetention'
+            Resource:
+              - {'Fn::Sub': '${Bucket.Arn}/*'}
+            Condition:
+              'Null':
+                's3:object-lock-mode': 'true'
+          - Sid: 'RequireObjectLockModeToBeGovernance'
+            Effect: Deny
+            Principal: '*'
+            Action:
+              - 's3:PutObject'
+              - 's3:PutObjectRetention'
+            Resource:
+              - {'Fn::Sub': '${Bucket.Arn}/*'}
+            Condition:
+              'StringNotEqualsIgnoreCase':
+                's3:object-lock-mode': 'GOVERNANCE'
+      
+Outputs:
+  Bucket:
+    Description: Name of bucket containing backups
+    Value: {Ref: Bucket}
+    Export:
+      Name: {'Fn::Sub': "${BucketExport}"}

@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 import functools
 import hashlib
+import inspect
 import socket
 from typing import Optional
 
@@ -202,3 +203,13 @@ def namedtuple_def(fn=None, **kwargs):
             return fn_val
         result.__getattr__ = template_lookup
     return result
+
+def as_attr(obj, attr_name: str):
+    def decorator(fn):
+        attr_val = fn
+        setattr(obj, attr_name, attr_val)
+        fn.__module__ = obj.__module__
+        fn.__qualname__ = obj.__qualname__ + '.' + attr_name
+        return fn
+    
+    return decorator
