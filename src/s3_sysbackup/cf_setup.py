@@ -30,6 +30,7 @@ See :class:`ServiceResourceCreator` for creation of a backup repository and
 scheduled jobs.
 """
 
+from botocore.exceptions import ClientError as AwsError # package boto3
 import boto3
 from pathlib import Path
 from uuid import uuid4
@@ -37,6 +38,9 @@ from .utils import (
     as_attr,
     namedtuple_def,
 )
+
+import logging
+_log = logging.getLogger(__name__)
 
 @namedtuple_def
 class PackageParameters(list):
@@ -91,16 +95,41 @@ def _read_template(template_name: str) -> str:
     with template_path.open() as f:
         return f.read()
 
-def create_user(user_name: str, package_name: str = DEFAULT_PACKAGE_NAME, *, cf_resource=None, region_name=None):
+def create_user(user_name: str, package_name: str = DEFAULT_PACKAGE_NAME, *, iam_resource=None):
     params = PackageParameters.lookup_existing(package_name=package_name)
-
-    cf = cf_resource or boto3.resource('cloudformation', region_name=region_name)
-    return cf.create_stack(
-        StackName=user_name,
-        TemplateBody=_read_template('createuser'),
-        Parameters=params.user_creation_parameters(),
-        Capabilities=['CAPABILITY_NAMED_IAM'],
+    
+    iam = iam_resource or boto3.resource('iam')
+    user = iam.create_user(
+        Path='/external-automation/',
+        UserName=user_name,
+        PermissionsBoundary=params.permissions_boundary_arn,
+        Tags=list(
+            dict(Key=k, Value=v) for k, v in [
+                ('Package', package_name),
+                ('Usage', 'external'),
+            ]
+        )
     )
+    try:
+        # Add to group
+        user.add_group(GroupName=params.group_name)
+    except AwsError as e:
+        _log.warning(
+            "While adding IAM User %r to IAM Group %r:\n    %s",
+            user_name,
+            params.group_name,
+            e,
+            exc_info=True
+        )
+    except Exception as e:
+        _log.warning(
+            "While adding IAM User %r to external backups group:\n    %s",
+            user_name,
+            e,
+            exc_info=True
+        )
+    
+    return user
 
 class ServiceResourceCreator:
     region_name = None
