@@ -222,6 +222,82 @@ Resources:
                 Resource:
                   - {'Fn::Sub': "${RestoreRole.Arn}"}
   
+  AuditBucketAccessPolicy:
+    # REQUIRES (on stack creation/update): CAPABILITY_IAM or CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: >-
+        Permissions allowed for audit role to access S3 storage
+      Path: {'Fn::Sub': "/systems/${PackageName}/"}
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - 's3:ListAllMyBuckets'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 's3:ListBucket'
+              - 's3:ListBucketVersions'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}"}
+            Condition:
+              StringLike:
+                's3:prefix':
+                  - 'manifests/*'
+                  - 'content/*'
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:GetObjectVersion'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}/manifests/*"}
+  
+  AuditRole:
+    # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: {'Fn::Sub': "BackupAuditRole-${PackageName}"}
+      Path: {'Fn::Sub': "/systems/${PackageName}/"} #YAMLTIE *IAMPath
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringLike:
+                'aws:PrincipalArn':
+                  - {'Fn::Sub': "arn:aws:iam::${AWS::AccountId}:*"}
+      PermissionsBoundary: {Ref: AuditBucketAccessPolicy}
+      Description: >-
+        Role to be assumed by principals who need to verify (to the first
+        order) that backups were taken as intended.
+      ManagedPolicyArns:
+        - {Ref: AuditBucketAccessPolicy}
+      Tags:
+        - Key: Package
+          Value: {Ref: PackageName}
+  
+  AuditorsGroup:
+    # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM
+    Type: AWS::IAM::Group
+    Properties:
+      Path: {'Fn::Sub': "/systems/${PackageName}/"} #YAMLTIE *IAMPath
+      GroupName: {'Fn::Sub': "BackupAuditors-${PackageName}"}
+      Policies:
+        - PolicyName: {'Fn::Sub': "AssumeAuditRolePolicy-${PackageName}"}
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sts:AssumeRole'
+                Resource:
+                  - {'Fn::Sub': "${AuditRole.Arn}"}
+  
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -245,6 +321,7 @@ Resources:
                   - {Ref: 'AWS::AccountId'}
                   - {'Fn::Sub': "${BackupRole.RoleId}:*"}
                   - {'Fn::Sub': "${RestoreRole.RoleId}:*"}
+                  - {'Fn::Sub': "${AuditRole.RoleId}:*"}
                   # Any other user ID we want to explicitly allow
           - Sid: 'OnlyDeleteThroughCloudFormation'
             Effect: Deny
