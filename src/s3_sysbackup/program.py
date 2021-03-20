@@ -126,6 +126,13 @@ class _CommonArgs:
             '--package-name', action='store',
             help="Explicit package name for S3 resource group",
         )
+    
+    @classmethod
+    def conf_dir(cls, parser):
+        parser.add_argument(
+            '--conf-dir', action='store', default=DEFAULT_CONF_DIR,
+            help="Explicitly specify path to local system configuration",
+        )
 
 @_subcommand
 def create_resources(args):
@@ -187,10 +194,7 @@ def write_config(args):
         setattr(tool, k, v)
     tool.configure_system()
 with value(write_config.argparser) as parser:
-    parser.add_argument(
-        '--conf-dir', action='store', default=DEFAULT_CONF_DIR,
-        help="Explicitly specify where the local system configuration is created",
-    )
+    _CommonArgs.conf_dir(parser)
     _CommonArgs.package_name(parser)
     parser.add_argument(
         '-u', '--user', metavar='IAM-USER', action='store', dest='new_user',
@@ -212,6 +216,17 @@ with value(write_config.argparser) as parser:
         will be saved; which of the two occurs depends on the presence of
         '--user': saving if it is given, loading if not.
     """)
+
+@_subcommand
+def archive(args):
+    """Create (and upload to S3) a current snapshot per the config"""
+    from .saver import Saver
+    tool = Saver()
+    tool.config_dir = args.conf_dir
+    tool.load_config()
+    tool.run()
+with value(archive.argparser) as parser:
+    _CommonArgs.conf_dir(parser)
 
 class _ProgOptKwargs(dict):
     def __init__(self, program_args):
