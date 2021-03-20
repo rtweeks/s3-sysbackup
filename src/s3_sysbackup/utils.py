@@ -213,3 +213,8 @@ def as_attr(obj, attr_name: str):
         return fn
     
     return decorator
+
+@contextmanager
+def value(v):
+    """Syntax sugar for an indented block using a name for a value"""
+    yield v
