@@ -238,12 +238,18 @@ class Saver:
             s3_client=s3,
         )
         
+        manifest = {}
         snapshotter = Snapshotter(key_prefix='snapshots/', **facilitator_kwargs)
         quilter = Quilter(lock_timeout=self.lock_timeout, **facilitator_kwargs)
         
         if return_tools:
             return dict(snapshotter=snapshotter, quilter=quilter)
-            
+        
+        # Add a logging handler that records warnings+ into manifest
+        log_accum_handler = _LogAccumHandler(manifest, 'log')
+        log_accum_handler.setLevel(logging.WARNING)
+        logging.root.addHandler(log_accum_handler)
+        
         for fpath in self._provider_paths('snapshots.d'):
             try:
                 snapshotter.record_from(fpath)
@@ -266,8 +272,10 @@ class Saver:
                 if _is_aws_error(e, 'AccessDenied'):
                     break
         
+        logging.root.removeHandler(log_accum_handler)
+        
         try:
-            manifest = dict(
+            manifest.update(
                 content=list(
                     quilter.get_manifest_jsonl_lines(as_str=False)
                 ),
@@ -361,3 +369,22 @@ class Saver:
             role_creds['region_name'] = region_name
         
         return boto3.Session(**role_creds)
+
+class _LogAccumHandler(logging.Handler):
+    def __init__(self, manifest, key):
+        super().__init__()
+        self.manifest = manifest
+        self.key = str(key)
+    
+    def emit(self, record):
+        if isinstance(record.msg, str):
+            message = record.msg % record.args
+        else:
+            message = str(record.msg)
+        
+        self.manifest.setdefault(self.key, []).append(dict(
+            at=record.asctime,
+            level=record.levelname,
+            logger=record.name,
+            message=message,
+        ))
