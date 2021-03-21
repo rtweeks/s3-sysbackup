@@ -165,7 +165,7 @@ def backup_flock(fileobj, timeout_seconds, *, timestep=0.1):
     locked = False
     while time.time() < deadline:
         try:
-            fcntl.flock(fileobj, fcntl.LOCK_SH | fnctl.LOCK_NB)
+            fcntl.flock(fileobj, fcntl.LOCK_SH | fcntl.LOCK_NB)
             locked = True
             break
         except IOError as e:
@@ -184,7 +184,7 @@ def backup_flock(fileobj, timeout_seconds, *, timestep=0.1):
         yield LockStatus(locked)
     finally:
         if locked:
-            fcntl.flock(fileobj, fnctl.LOCK_UN)
+            fcntl.flock(fileobj, fcntl.LOCK_UN)
 
 @namedtuple_def
 def LockStatus():

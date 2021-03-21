@@ -17,6 +17,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+from base64 import b64encode
 from binascii import hexlify, unhexlify
 import boto3 # package boto3
 from botocore.exceptions import ClientError as AwsError # package boto3
@@ -30,7 +31,7 @@ import json
 import os.path
 import shutil
 from tempfile import TemporaryFile
-from typing import List
+from typing import Any, Callable, List
 
 from .fs import (
     compresses_well,
@@ -148,7 +149,7 @@ class Quilter(BackupFacilitator):
                 )
                 
                 # If there is at least one INvalid version, log an error requesting manual review
-                if len(version_recs) > len(valid_versions):
+                if len(version_records) > len(valid_versions):
                     _log.error("Key %r has more than one stored version; manual review of versions suggested", content_key)
                 
                 # If there is at least one valid version, try extending that version's retention period
@@ -190,7 +191,7 @@ class Quilter(BackupFacilitator):
                 put_object_response = self.s3.put_object(
                     **object_loc,
                     Body=f,
-                    ContentMD5=md5_hash.aws_integrity(),
+                    ContentMD5=backup_content_info.aws_integrity(),
                     **extra_args,
                 )
                 _log.info("content of %r stored in S3", fpath)
@@ -283,7 +284,7 @@ class Quilter(BackupFacilitator):
             lov_kwargs['KeyMarker'] = lov_response.get('NextKeyMarker', '')
             lov_kwargs['VersionIdMarker'] = lov_response.get('NextVersionIdMarker', '')
             
-            for ver_rec in lov_response['Versions']:
+            for ver_rec in lov_response.get('Versions', ()):
                 ver_info_dict.setdefault(ver_rec['Key'], []).append(ver_rec)
 
 class Symlink:
@@ -383,26 +384,29 @@ class _FilePrepStream:
         buf = self.source.read(chunksize)
         
         compress_stream = compresses_well(io.BytesIO(buf))
-        if compress_stream:
-            result.content_compressed = True
-            consume_gzipped = functools.partial(self._posthash_and_consume, consume)
-            zf = gzip.GzipFile(None, 'wb', fileobj=self._Adapter(consume_gzipped))
-            consume = lambda buf: zf.write(buf) if buf else zf.flush()
-        else:
-            consume = functools.partial(self._posthash_and_consume, consume)
-        
-        self.sha256_prehash.update(buf)
-        self.md5_prehash.update(buf)
-        self.input_byte_count += len(buf)
-        consume(buf)
-        
-        for buf in self._remaining_chunks(self.source, chunksize):
+        with ExitStack() as resources:
+            if compress_stream:
+                result.content_compressed = True
+                consume_gzipped = functools.partial(self._posthash_and_consume, consume)
+                zf = resources.enter_context(
+                    gzip.GzipFile(None, 'wb', fileobj=self._Adapter(consume_gzipped))
+                )
+                consume = lambda buf: zf.write(buf) if buf else zf.flush()
+            else:
+                consume = functools.partial(self._posthash_and_consume, consume)
+            
             self.sha256_prehash.update(buf)
             self.md5_prehash.update(buf)
             self.input_byte_count += len(buf)
             consume(buf)
-        
-        consume(b'')
+            
+            for buf in self._remaining_chunks(self.source, chunksize):
+                self.sha256_prehash.update(buf)
+                self.md5_prehash.update(buf)
+                self.input_byte_count += len(buf)
+                consume(buf)
+            
+            consume(b'')
         
         result.sha256_prehash, self.sha256_prehash = self.sha256_prehash.digest(), hashlib.sha256()
         result.md5_prehash, self.md5_prehash = self.md5_prehash.digest(), hashlib.md5()

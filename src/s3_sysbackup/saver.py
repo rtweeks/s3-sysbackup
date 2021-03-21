@@ -31,7 +31,7 @@ import socket
 import subprocess as subp
 from tempfile import TemporaryFile
 
-from .quilting import Quilter
+from .quilting import Quilter, TargetFileError
 from .snapshots import Snapshotter
 from .utils import (
     FileHasher,
