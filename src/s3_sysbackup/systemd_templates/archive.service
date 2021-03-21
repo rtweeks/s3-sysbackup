@@ -1,0 +1,12 @@
+[Unit]
+Description=Archive files and data to AWS S3
+Wants=s3-sysbackup-archive.timer
+
+[Service]
+Type=oneshot
+ExecStart=$archive_cmd
+User=backup
+Group=backup
+
+[Install]
+WantedBy=multiuser.target

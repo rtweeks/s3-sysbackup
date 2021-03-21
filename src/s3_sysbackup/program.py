@@ -21,10 +21,12 @@ import argparse
 import functools
 import os
 from pathlib import Path
+import re
 import sys
 from textwrap import dedent
 
-from .system_setup import DEFAULT_CONF_DIR
+from .resource_setup import DEFAULT_PACKAGE_NAME
+from .system_setup import DEFAULT_CONF_DIR, UnitsWriterDefaults
 from .utils import value
 
 USE_SYS_ARGV = object()
@@ -115,7 +117,15 @@ def _subcommand(fn=None, **kwargs):
         return functools.partial(_subcommand, **kwargs)
     
     fn.command = kwargs.get('command') or fn.__name__.replace('_', '-')
-    fn.argparser = argparse.ArgumentParser(add_help=False)
+    fn.argparser = argparse.ArgumentParser(
+        add_help=False,
+    )
+    orig_add_argument = fn.argparser.add_argument
+    def enhanced_add_argument(*args, desc_default=True, **kwargs):
+        if desc_default and 'help' in kwargs and 'default' in kwargs:
+            kwargs['help'] += " (default: {})".format(kwargs.get('default'))
+        return orig_add_argument(*args, **kwargs)
+    fn.argparser.add_argument = enhanced_add_argument
     _subcommands.append(fn)
     return fn
 
@@ -123,8 +133,8 @@ class _CommonArgs:
     @classmethod
     def package_name(cls, parser):
         parser.add_argument(
-            '--package-name', action='store',
-            help="Explicit package name for S3 resource group",
+            '--package-name', action='store', default=DEFAULT_PACKAGE_NAME,
+            help="Package name for S3 resource group",
         )
     
     @classmethod
@@ -133,6 +143,11 @@ class _CommonArgs:
             '--conf-dir', action='store', default=DEFAULT_CONF_DIR,
             help="Explicitly specify path to local system configuration",
         )
+
+def wallclock_time(s: str) -> str:
+    from .system_setup import check_systemd_calendar_spec
+    check_systemd_calendar_spec('*-*-* ' + s)
+    return s
 
 @_subcommand
 def create_resources(args):
@@ -154,7 +169,7 @@ with value(create_resources.argparser) as parser:
     _CommonArgs.package_name(parser)
     parser.add_argument(
         '--stack-name', action='store',
-        help="Explicit stack name for CloudFormation stack"
+        help="Name for CloudFormation stack"
             " (defaults to the package name)",
     )
     parser.add_argument(
@@ -166,40 +181,67 @@ with value(create_resources.argparser) as parser:
 def write_config(args):
     """Write an archiving configuration for the local system"""
     from .resource_setup import create_user
-    from .system_setup import ConfigWriter
+    from .system_setup import ConfigWriter, UnitsWriter, MulticonfigWriter
     
-    tool = ConfigWriter()
-    tool.lookup_s3_params(**_ProgOptKwargs(args)
-        .incorporate('package_name')
-    )
-    if args.new_user:
-        if not args.creds_file and args.save_new_credentials:
-            raise InvalidCommandLine(
-                "Either specify an '--creds-file' or '--no-creds-file'"
+    new_user = None
+    try:
+        tool1 = ConfigWriter()
+        tool1.lookup_s3_params(**_ProgOptKwargs(args)
+            .incorporate('package_name')
+        )
+        if args.new_user:
+            if not args.creds_file and args.save_new_credentials:
+                raise InvalidCommandLine(
+                    "Either specify an '--creds-file' or '--no-creds-file'"
+                )
+            new_user = create_user(args.new_user, package_name=args.package_name)
+            tool1.use_new_access_key(
+                new_user,
+                args.creds_file if args.save_new_credentials else None,
             )
-        tool.use_new_access_key(
-            create_user(args.new_user, package_name=args.package_name),
-            args.creds_file if args.save_new_credentials else None,
-        )
-    elif not args.creds_file:
-        raise InvalidCommandLine(
-            "Specify either '--user', '--creds-file', or both"
-        )
-        tool.encrypted_credentials_file = args.creds_file
-    for k, v in _ProgOptKwargs(args).incorporate(
-        'conf_dir',
-        'profile',
-        'retention_days',
-    ).items():
-        setattr(tool, k, v)
-    tool.configure_system()
+        elif args.ambient_creds:
+            pass
+        elif not args.creds_file:
+            raise InvalidCommandLine(
+                "Specify either '--user', '--creds-file', both, or '--ambient-creds'"
+            )
+            tool1.encrypted_credentials_file = args.creds_file
+        for k, v in _ProgOptKwargs(args).incorporate(
+            'conf_dir',
+            'profile',
+            'retention_days',
+        ).items():
+            setattr(tool1, k, v)
+        
+        tool2 = UnitsWriter()
+        for k, v in _ProgOptKwargs(args).incorporate(
+            'conf_dir',
+            'unit_base_name',
+            'backup_window_start',
+            'backup_window_length',
+            'start_and_enable',
+        ).items():
+            setattr(tool2, k, v)
+        
+        MulticonfigWriter(tool1, tool2).configure_system()
+    except BaseException:
+        if new_user:
+            for g in new_user.groups.all():
+                g.remove_user(UserName=new_user.name)
+            new_user.delete()
+        raise
 with value(write_config.argparser) as parser:
     _CommonArgs.conf_dir(parser)
     _CommonArgs.package_name(parser)
-    parser.add_argument(
-        '-u', '--user', metavar='IAM-USER', action='store', dest='new_user',
-        help="Create a new AWS IAM user IAM-USER to archive data",
-    )
+    with value(parser.add_mutually_exclusive_group()) as creds_group:
+        creds_group.add_argument(
+            '-u', '--user', metavar='IAM-USER', action='store', dest='new_user',
+            help="Create a new AWS IAM user IAM-USER to archive data",
+        )
+        creds_group.add_argument(
+            '-c', '--ambient-creds', action='store_true',
+            help="Use the ambient credentials of the 'backup' account to access AWS"
+        )
     parser.add_argument(
         '--creds-file', metavar='FPATH', action='store',
         help="Path to file for encrypted IAM user credentials",
@@ -209,6 +251,33 @@ with value(write_config.argparser) as parser:
         dest='save_new_credentials',
         help="Do not save encrypted version of newly-created IAM user's"
             " credentials",
+    )
+    parser.add_argument(
+        '--profile', action='store',
+        help="Alternate AWS profile for the backup service to use",
+    )
+    parser.add_argument(
+        '--retain-days', type=int, action='store', dest='retention_days',
+        help="Number of days to retain the backup archive",
+    )
+    parser.add_argument(
+        '--systemd-unit', action='store', default=UnitsWriterDefaults.unit_base_name,
+        dest='unit_base_name',
+        help="Base part (no extension) of systemd units to write",
+    )
+    parser.add_argument(
+        '--bkpwin-start', metavar='SYSTEMD-TIME', action='store', type=wallclock_time,
+        dest='backup_window_start', default=UnitsWriterDefaults.backup_window_start,
+        help="Earliest daily time backup can occur",
+    )
+    parser.add_argument(
+        '--bkpwin-length', metavar='SYSTEMD-TIMESPAN', action='store',
+        dest='backup_window_length', default=UnitsWriterDefaults.backup_window_length,
+        help="Maximum time after start by which backup should be scheduled",
+    )
+    parser.add_argument(
+        '--no-start', action='store_false', dest='start_and_enable',
+        help="Do not add the backup service to the system schedule"
     )
     parser.epilog = dedent("""
         You can use '--creds-file' to supply a path either *from which* to load
