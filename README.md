@@ -28,7 +28,7 @@ This section configures usage of S3.  The available settings are:
 
 | Setting | Value Description |
 | :------------- | :-------------------------------------------------------- |
-| `bucket` | Explicitly sets the name of the bucket into which the backup should b e made; if not given (or explicitly set on the `Saver` before `load_config` is called), CloudFormation is used to identify the bucket |
+| `bucket` | Explicitly sets the name of the bucket into which the backup should be made; if not given (or explicitly set on the `Saver` before `load_config` is called), CloudFormation is used to identify the bucket |
 
 ### `conf` File: `[cloudformation]` Section
 
