@@ -53,6 +53,11 @@ Resources:
               - {'Fn::Sub': "${Bucket.Arn}/*"}
           - Effect: Allow
             Action:
+              - 's3:GetObjectRetention'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}/content/*"}
+          - Effect: Allow
+            Action:
               - 's3:ListBucketVersions'
             Resource:
               - {'Fn::Sub': "${Bucket.Arn}"}
