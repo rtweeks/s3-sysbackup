@@ -388,9 +388,13 @@ class _FilePrepStream:
             if compress_stream:
                 result.content_compressed = True
                 consume_gzipped = functools.partial(self._posthash_and_consume, consume)
-                zf = resources.enter_context(
-                    gzip.GzipFile(None, 'wb', fileobj=self._Adapter(consume_gzipped))
-                )
+                zf = resources.enter_context(gzip.GzipFile(
+                    mode='wb',
+                    fileobj=self._Adapter(consume_gzipped),
+                    
+                    # Use fixed timestamp so MD-5 post-hash is equal for equal content
+                    mtime=946684800, # 2000-01-01 00:00:00 UTC
+                ))
                 consume = lambda buf: zf.write(buf) if buf else zf.flush()
             else:
                 consume = functools.partial(self._posthash_and_consume, consume)
