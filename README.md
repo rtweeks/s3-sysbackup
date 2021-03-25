@@ -2,7 +2,27 @@
 
 A very flexible, Unix-style facility for backing content up to **AWS S3** with time/space folding, using the S3 **Object Lock** system for *write-once-read-many* (WORM) storage, which can help provide additional security or compliance around backup requirements.
 
-S3 charges not only for storage, but also for transfer of data into S3.  `s3-sysbackup` works to minimize both kinds of charges, including a limited ability to amortize backup content storage over multiple machines.
+S3 charges not only for storage, but also for management operations on data in S3.  `s3-sysbackup` works to minimize both kinds of charges, including a limited ability to amortize backup content storage over multiple machines.
+
+## The Command Line
+
+This package provides a console entry point named `s3-sysbackup`, a program which takes a subcommand as its first argument.  Help is available from the program by using the `-h` or `--help` option, either with or without a subcommand.
+
+### The `create-resources` Subcommand
+
+This subcommand creates the resources in AWS necessary for storage and retrieval of backup data.  These resources include not only an S3 bucket, but also IAM roles, groups, and policies to best manage the S3 bucket it creates.
+
+The created resources are organized into a "package," which by default has the name `s3-sysbackup`.  Multiple instance can be created with different package names.  Package names must be globally unique within your account.  Each package exports the bucket name from CloudFormation within the region used for the CloudFormation stack, meaning that either a non-default name is needed when a second package is created in the same region, or the package stacks need to be created in separate regions.
+
+### The `write-config` Subcommand
+
+This writes a configuration file (and possibly a credentials file) for use by `s3-sysbackup archive`.  It also writes unit files for `systemd` so the archiver will run on a daily basis.  This command can create an IAM user for the backup system to authenticate to AWS as, using the IAM resources created by `s3-sysbackup create-resources` to strictly limit the capabilities of the account.
+
+When this subcommand is used to create an IAM account for uploading backup data, it can save those credentials in an encrypted file for transfer to and use on another system.  Creating this encrypted file requires the presence of the `ccrypt` program on the system.  Since this encryption only supports a single password, if you need to share the encrypted credentials with another user, *do not* use your own account password (either system password or AWS password).
+
+### The `archive` Subcommand
+
+The `archive` subcommand is the workhorse of this backup system: it evaluates which data needs to be sent up to S3, manages object retention periods, and builds the backup manifests for each run.  This subcommand is typically invoked by a `systemd` "timer" unit on a daily basis.
 
 ## Configuration
 
@@ -56,7 +76,7 @@ Quilting, like the Git version control system, is content based: it keys the obj
 
 The manifest, like a recursive version of Git's *trees*, has entries referencing a file's content, path on the system, and permissions, but also its ownership.  It also contains information about symbolic links and directories, so as much as possible of the backed-up system can be restored.  Where possible, ownership uses symbolic names and permissions are captured as ACLs, but fallbacks to numeric representations can occur.
 
-Selection of files for the quilting strategy is done by executables placed (or symlinked into) in the `pickers.d` subdirectory of the configuration directory.  Each executable file in that directory is run and the lines it prints to STDOUT are interpreted as file paths; one typical usage is to put one or more executable shell scripts that call `find` with the desired parameters.
+Selection of files for the quilting strategy is done by executables placed in (or symlinked into) the `pickers.d` subdirectory of the configuration directory.  Each executable file in that directory is run and the lines it prints to STDOUT are interpreted as file paths; one typical usage is to put one or more executable shell scripts that call `find` with the desired parameters.
 
 To save on transfer and storage costs with S3, each file selected by a *picker* will be evaluated as to whether gzipping will improve storage efficiency.  If the test indicates that the file compresses well, the GZip algorithm will be applied before the file is transferred to S3; the application of GZip will be noted on the S3 object's metadata.
 
