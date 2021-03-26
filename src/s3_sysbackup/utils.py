@@ -102,10 +102,10 @@ class BackupFacilitator:
             return s
         return '-'.join((self._host, s))
     
-    def _retention_args(self, *, prefix=''):
+    def _retention_args(self, *, prefix='', extra_time=None):
         return dict(zip(
             (prefix + k for k in ('Mode', 'RetainUntilDate')),
-            ('GOVERNANCE', self.retain_until)
+            ('GOVERNANCE', self.retain_until + (extra_time or timedelta()))
         ))
 
 class S3IntegrityHasher:
