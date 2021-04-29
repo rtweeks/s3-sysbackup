@@ -475,6 +475,17 @@ class UnitsWriter(_SystemConfigurator, UnitsWriterDefaults):
             parts.extend(['--conf-dir', self.conf_dir])
         return ' '.join(shlex.quote(t) for t in parts)
 
+class CacheDeployer(_SystemConfigurator):
+    def all_config_cmds(self, ):
+        yield _subproc_call(
+            'sudo', 'install', '-d', '/var/cache'
+        )
+        yield _subproc_call(
+            'sudo', 'install',
+            '--owner=backup',
+            '-d', '/var/cache/backup',
+        )
+
 class MulticonfigWriter(_SystemConfigurator):
     def __init__(self, *configurators):
         super().__init__()

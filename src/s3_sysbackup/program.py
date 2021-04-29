@@ -181,7 +181,7 @@ with value(create_resources.argparser) as parser:
 def write_config(args):
     """Write an archiving configuration for the local system"""
     from .resource_setup import create_user
-    from .system_setup import ConfigWriter, UnitsWriter, MulticonfigWriter
+    from .system_setup import ConfigWriter, UnitsWriter, CacheDeployer, MulticonfigWriter
     
     new_user = None
     try:
@@ -192,7 +192,7 @@ def write_config(args):
         if args.new_user:
             if not args.creds_file and args.save_new_credentials:
                 raise InvalidCommandLine(
-                    "Either specify an '--creds-file' or '--no-creds-file'"
+                    "Either specify a '--creds-file' or '--no-creds-file'"
                 )
             new_user = create_user(args.new_user, package_name=args.package_name)
             tool1.use_new_access_key(
@@ -223,7 +223,9 @@ def write_config(args):
         ).items():
             setattr(tool2, k, v)
         
-        MulticonfigWriter(tool1, tool2).configure_system()
+        tool3 = CacheDeployer()
+        
+        MulticonfigWriter(tool1, tool2, tool3).configure_system()
     except BaseException:
         if new_user:
             for g in new_user.groups.all():

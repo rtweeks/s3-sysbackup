@@ -23,6 +23,7 @@ import boto3 # package boto3
 from botocore.exceptions import ClientError as AwsError # package boto3
 from contextlib import ExitStack
 from collections import defaultdict
+from datetime import datetime, timedelta
 import functools
 import gzip
 import hashlib
@@ -30,6 +31,7 @@ import io
 import json
 import os.path
 import shutil
+import sqlite3
 from tempfile import TemporaryFile
 from typing import Any, Callable, List
 
@@ -72,8 +74,11 @@ class TargetFileError(Exception):
             return "target {!r} not found on system".format(self.file)
         return "unable to open target {!r}".format(self.file)
 
-class _NonconformingLatestVersionError(Exception):
-    """Raised if a mismatch between object key and content is detected"""
+class _NoExistingVersion(Exception):
+    """Raised if a file's content does not exist on S3"""
+
+class _AdequateRetentionExists(Exception):
+    """Raised when additional retention is not necessary for the given object version"""
 
 class Quilter(BackupFacilitator):
     def __init__(self, bucket: str, *,
@@ -105,112 +110,11 @@ class Quilter(BackupFacilitator):
         
         self._include_directories(fpath)
         
-        # Make a local, temporary copy of the file (holding a flock on the source for the duration)
-        with ExitStack() as resources:
-            f = resources.enter_context(TemporaryFile())
-            extra_args = {'Metadata': {}}
-            extra_args.update(self._retention_args(prefix='ObjectLock'))
+        with _FileContentHandler(self) as content_handler:
+            with self._open_target_file(fpath) as origf:
+                content_handler.prep_content(origf, lock_timeout=self.lock_timeout)
             
-            # TODO: Try to use reflink to make a copy-on-write (i.e. lightweight)
-            # copy of the file as a starting point to avoid a "partial write";
-            # still do this in the context of a LOCK_SH flock on the file (if
-            # quickly available).
-            with self._open_target_file(fpath) as origf, backup_flock(origf, self.lock_timeout) as read_lock:
-                locked_for_read = read_lock.obtained
-                backup_content_info = _FilePrepStream(origf).stream_to(f.write)
-            f.seek(0)
-            
-            if backup_content_info.content_compressed:
-                _log.info("gzip-compressing content from %r", fpath)
-                extra_args['Metadata']['storage-encoding'] = 'gzip'
-                if _log.isEnabledFor(logging.INFO):
-                    sizes = (zf.tell(), f.tell())
-                    ratio = 1 - (sizes[0] / sizes[1])
-                    _log.info(
-                        "compressed %d byes to %d bytes (%.1f%%)",
-                        backup_content_info.input_byte_count,
-                        backup_content_info.output_byte_count,
-                        backup_content_info.compression_ratio * 100,
-                    )
-            
-            content_key = "content/" + backup_content_info.content_hexdigest
-            _log.info("content key for %r: %s", fpath, content_key)
-            
-            object_loc = dict(Bucket=self.bucket, Key=content_key)
-            
-            try:
-                version_records = self._get_content_version_records(
-                    content_key
-                )
-                existing_version_id = None
-                valid_versions = list(
-                    v_rec['VersionId'] for v_rec in version_records
-                    if backup_content_info.matches_etag(v_rec['ETag'])
-                )
-                
-                # If there is at least one INvalid version, log an error requesting manual review
-                if len(version_records) > len(valid_versions):
-                    _log.error("Key %r has more than one stored version; manual review of versions suggested", content_key)
-                
-                # If there is at least one valid version, try extending that version's retention period
-                if len(valid_versions) > 0:
-                    existing_version_id = valid_versions[0]
-                else:
-                    # Otherwise, we'll have to upload
-                    raise _NonconformingLatestVersionError(self.bucket, content_key)
-                
-                # TODO: Use a local database to check if we know we set a long-enough retention period
-                
-                update_retention_kwargs = dict(
-                    **object_loc,
-                    VersionId=existing_version_id,
-                    Retention=self._retention_args(),
-                )
-                _log.debug(
-                    "object retention update kwargs: %r",
-                    update_retention_kwargs,
-                )
-                self.s3.put_object_retention(**update_retention_kwargs)
-                _log.info(
-                    "object retention set for s3://%s/%s; no upload needed",
-                    self.bucket,
-                    content_key
-                )
-                version_id = existing_version_id
-                
-                # TODO: Update the local database to let it know we set the retention period
-            except (AwsError, _NonconformingLatestVersionError) as e:
-                # Sadly, we can't test for a "NoSuchKey" error as S3 sometimes returns an "AccessDenied" instead
-                
-                _log.info(
-                    "storing file content for %r at s3://%s/%s",
-                    fpath,
-                    object_loc['Bucket'],
-                    object_loc['Key'],
-                )
-                put_object_response = self.s3.put_object(
-                    **object_loc,
-                    Body=f,
-                    ContentMD5=backup_content_info.aws_integrity(),
-                    **extra_args,
-                )
-                _log.info("content of %r stored in S3", fpath)
-                version_id = put_object_response['VersionId']
-                
-                # TODO: Update the local database with the new retention period information for this object
-        
-        # Accumulate this file into the manifest
-        _log.info("incorporating file %r in manifest", fpath)
-        file_rec = File(
-            get_ownership(fpath),
-            get_permissions(fpath),
-            content_key,
-            version_id,
-            storage_id(fpath),
-        )
-        if not locked_for_read:
-            file_rec.unlocked_copy = True
-        self.manifest[fpath] = file_rec
+            self.manifest[fpath] = content_handler.save_to_bucket()
     
     def get_manifest_jsonl_lines(self, *, as_str: bool = True):
         for path in sorted(self.manifest):
@@ -438,3 +342,246 @@ class _FilePrepStream:
             if not buf:
                 break
             yield buf
+
+class _FileContentHandler:
+    extra_retention = timedelta(days=7)
+    
+    def __init__(self, quilter: Quilter):
+        super().__init__()
+        self._resources = ExitStack()
+        self.extra_args = {'Metadata': {}}
+        self.quilter = quilter
+    
+    def __enter__(self, ):
+        self._resources.__enter__()
+        self.backup_content = self.bound(TemporaryFile())
+        return self
+    
+    def __exit__(self, *args):
+        self._resources.__exit__(*args)
+    
+    @property
+    def bucket(self):
+        return self.quilter.bucket
+    
+    @property
+    def s3(self):
+        return self.quilter.s3
+    
+    @property
+    def object_loc(self):
+        return dict(Bucket=self.bucket, Key=self.content_key)
+    
+    def bound(self, resource):
+        return self._resources.enter_context(resource)
+    
+    def prep_content(self, origf, *, fpath=None, lock_timeout=None):
+        self.fpath = origf.name if fpath is None else fpath
+        
+        # Make a local, temporary copy of the file (holding a flock on the source for the duration)
+        with backup_flock(origf, lock_timeout) as read_lock:
+            self.locked_for_read = read_lock.obtained
+            self.content_info = ci = _FilePrepStream(origf).stream_to(self.backup_content.write)
+        self.backup_content.seek(0)
+        
+        if ci.content_compressed:
+            _log.info("gzip-compressed content from %r", self.fpath)
+        self.extra_args['Metadata']['storage-encoding'] = 'gzip'
+        if _log.isEnabledFor(logging.INFO):
+            _log.info(
+                "Compressed %d bytes to %d bytes (%.1f%%)",
+                ci.input_byte_count,
+                ci.output_byte_count,
+                ci.compression_ratio * 100,
+            )
+        
+        self.content_key = "content/" + ci.content_hexdigest
+        _log.info("Content key for %r: %s", self.fpath, self.content_key)
+    
+    def save_to_bucket(self, ):
+        try:
+            self.version_id = self._get_existing_version_id()
+            if self.version_id is None:
+                raise _NoExistingVersion
+            
+            if self._local_record_shows_adequate_retention():
+                raise _AdequateRetentionExists
+            
+            if self._s3_shows_adequate_retention():
+                raise _AdequateRetentionExists
+            
+            self._extend_retention_of_existing_version()
+            
+        except _AdequateRetentionExists:
+            pass
+        except Exception as e:
+            if not isinstance(e, (AwsError, _NoExistingVersion)):
+                _log.exception("Storing file content due to error: %s", e)
+            
+            self._put_content_object()
+        
+        _log.info("incorporating file %r in manifest", self.fpath)
+        file_rec = File(
+            get_ownership(self.fpath),
+            get_permissions(self.fpath),
+            self.content_key,
+            self.version_id,
+            storage_id(self.fpath),
+        )
+        if not self.locked_for_read:
+            file_rec.unlocked_copy = True
+        return file_rec
+    
+    def _put_content_object(self, ):
+        _log.info(
+            "Storing file content for %r at s3://%s/%s",
+            self.fpath,
+            self.bucket,
+            self.content_key,
+        )
+        self.extra_args.update(self.quilter._retention_args(
+            prefix='ObjectLock',
+            extra_time=self.extra_retention,
+        ))
+        put_object_response = self.s3.put_object(
+            **self.object_loc,
+            Body=self.backup_content,
+            ContentMD5=self.content_info.aws_integrity(),
+            **self.extra_args,
+        )
+        _log.info("Content of %r stored in S3", self.fpath)
+        self.version_id = put_object_response['VersionId']
+        self._record_retention_locally(
+            self.extra_args['ObjectLockRetainUntilDate']
+        )
+    
+    def _get_existing_version_id(self, ):
+        version_records = self.quilter._get_content_version_records(
+            self.content_key
+        )
+        valid_versions = list(
+            v_rec['VersionId'] for v_rec in version_records
+            if self.content_info.matches_etag(v_rec['ETag'])
+        )
+        
+        # If there is at least one INvalid version, log an error requesting manual review
+        if len(version_records) > len(valid_versions):
+            _log.error(
+                "Key %r has more than one stored version;"
+                " manual review of versions suggested",
+                self.content_key,
+            )
+        
+        # If there are no valid versions, we need to upload
+        if not valid_versions:
+            return None
+        
+        return valid_versions[0]
+    
+    def _extend_retention_of_existing_version(self, ):
+        update_retention_kwargs = dict(
+            **self.object_loc,
+            VersionId=self.version_id,
+            Retention=self.quilter._retention_args(
+                extra_time=self.extra_retention,
+            ),
+        )
+        _log.debug(
+            "Object retention update kwargs: %r",
+            update_retention_kwargs,
+        )
+        self.s3.put_object_retention(**update_retention_kwargs)
+        _log.info(
+            "Object retention for s3://%s/%s set; no upload needed",
+            self.bucket,
+            self.content_key,
+        )
+        
+        try:
+            self._record_retention_locally(
+                update_retention_kwargs['Retention']['RetainUntilDate']
+            )
+        except Exception as e:
+            _log.exception("While recording local retention: %s", e)
+    
+    def _local_record_shows_adequate_retention(self, ):
+        try:
+            return self.quilter.retain_until.timestamp() <= self._locally_stored_retention()
+        except Exception:
+            return False
+    
+    def _s3_shows_adequate_retention(self, ):
+        try:
+            retention_info = self.s3.get_object_retention(
+                **self.object_loc,
+                VersionId=self.version_id,
+            )['Retention']
+            retained_until = retention_info['RetainUntilDate']
+            
+            try:
+                self._record_retention_locally(retained_until)
+            except Exception as e:
+                _log.exception("While recording local retention: %s", e)
+            
+            return retained_until > self.quilter.retain_until
+        except Exception:
+            return False
+    
+    def _locally_stored_retention(self, ):
+        try:
+            self._ensure_retention_table()
+            conn = _get_db_conn()
+            
+            result = 0
+            rows = conn.execute("""
+                SELECT expires FROM retention
+                WHERE bucket = ?
+                AND key = ?
+                AND version_id = ?
+            """, (self.bucket, self.content_key, self.version_id))
+            return max((r[0] for r in rows), default=0)
+        except Exception as e:
+            _log.exception("While querying local retention info: %s", e)
+            return 0
+    
+    def _record_retention_locally(self, expiration: datetime):
+        self._ensure_retention_table()
+        conn = _get_db_conn()
+        
+        with conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO retention (bucket, key, version_id, expires)
+                VALUES (?, ?, ?, ?)
+            """, (
+                self.bucket,
+                self.content_key,
+                self.version_id,
+                expiration.timestamp(),
+            )).close()
+    
+    def _ensure_retention_table(self, ):
+        conn = _get_db_conn()
+        with conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS retention (
+                    bucket TEXT,
+                    key TEXT,
+                    version_id TEXT,
+                    expires INT,
+                    CONSTRAINT pkey PRIMARY KEY (bucket, key, version_id)
+                )
+            """).close()
+
+_db_conn = None
+def _get_db_conn():
+    global _db_conn
+    if _db_conn is not None:
+        try:
+            _db_conn.execute("select sqlite_version()").close()
+        except sqlite3.ProgrammingError:
+            _db_conn = None
+    
+    if _db_conn is None:
+        _db_conn = sqlite3.connect("/var/cache/backup/retention.db")
+    
+    return _db_conn
