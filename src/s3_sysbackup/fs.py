@@ -136,7 +136,7 @@ def get_permissions(path: Path) -> dict:
     
     if not getattr(get_permissions, '_no_getfacl', False):
         try:
-            acl = subp.check_output(['getfacl', '-cE', path], encoding='utf8')
+            acl = subp.check_output(['getfacl', '-cEp', path], encoding='utf8')
         except FileNotFoundError:
             get_permissions._no_getfacl = True
         except subp.CalledProcessError:
