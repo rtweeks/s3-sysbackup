@@ -61,7 +61,7 @@ class VersionInfo:
     def _git_cmd_for_vtag(self, cmd_str, *, subp='call', **kwargs):
         try:
             return getattr(subprocess, subp)(
-                ["git", '-C', self.git_dir] + cmd_str.split() + [self.version_tag],
+                ["git", '-C', os.path.dirname(self.git_dir)] + cmd_str.split() + [self.version_tag],
                 **kwargs
             )
         except FileNotFoundError:
