@@ -20,7 +20,7 @@
 import boto3 # package boto3
 from botocore.exceptions import ClientError as AwsError # package boto3
 from configparser import ConfigParser
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from getpass import getuser
 import gzip
 import json
@@ -382,9 +382,31 @@ class _LogAccumHandler(logging.Handler):
         else:
             message = str(record.msg)
         
-        self.manifest.setdefault(self.key, []).append(dict(
-            at=record.asctime,
+        manlog_entry = dict(
+            at=datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             level=record.levelname,
             logger=record.name,
             message=message,
-        ))
+        )
+        
+        try:
+            if record.exc_info:
+                ex = record.exc_info[1]
+                dest = (manlog_entry, 'exception')
+                
+                while ex:
+                    ex_log = dest[0].setdefault(dest[1], {})
+                    ex_type = type(ex)
+                    if ex_type.__module__ == 'builtins':
+                        ex_tname = ex_type.__qualname__
+                    else:
+                        ex_tname = '.'.join([ex_type.__module__, ex_type.__qualname__])
+                    ex_log.update(excType=ex_tname, message=str(ex))
+                    if ex.__cause__:
+                        dest, ex = (ex_log, 'causedBy'), ex.__cause__
+                    else:
+                        dest, ex = (ex_log, 'whileHandling'), ex.__context__
+        except Exception:
+            pass
+        
+        self.manifest.setdefault(self.key, []).append(manlog_entry)
