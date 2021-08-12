@@ -91,7 +91,7 @@ class BackupFacilitator:
         )
         self.use_host_prefix = use_host_prefix or bool(host)
         if self.use_host_prefix:
-            self._host = str(host) or socket.gethostname()
+            self._host = (host is not None and str(host)) or socket.gethostname()
     
     @property
     def bucket(self):
