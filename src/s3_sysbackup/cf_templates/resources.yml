@@ -252,12 +252,28 @@ Resources:
                 's3:prefix':
                   - 'manifests/*'
                   - 'content/*'
+                  - 'snapshots/*'
+          - Effect: Allow
+            Action:
+              - 's3:ListBucket'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}"}
+            Condition:
+              StringEquals:
+                's3:delimiter': '/'
+              StringNotLike:
+                's3:prefix': '?*'
           - Effect: Allow
             Action:
               - 's3:GetObject'
               - 's3:GetObjectVersion'
             Resource:
               - {'Fn::Sub': "${Bucket.Arn}/manifests/*"}
+          - Effect: Allow
+            Action:
+              - 's3:GetObjectRetention'
+            Resource:
+              - {'Fn::Sub': "${Bucket.Arn}/*"}
   
   AuditRole:
     # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM
