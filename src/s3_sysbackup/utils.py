@@ -21,7 +21,7 @@ import functools
 import hashlib
 import inspect
 import socket
-from typing import Optional
+from typing import Optional, Union as OneOf
 
 import logging
 _log = logging.getLogger(__name__)
@@ -218,3 +218,23 @@ def as_attr(obj, attr_name: str):
 def value(v):
     """Syntax sugar for an indented block using a name for a value"""
     yield v
+
+@contextmanager
+def handler_on_logger(
+    logger: OneOf[str, logging.Logger],
+    handler: logging.Handler
+):
+    """Add a handler to a logger in a context block
+    
+    :param logger: name or instance of target :class:`logging.Logger`
+    :param handler: handler for :class:`LogRecord`s
+    
+    """
+    if isinstance(logger, str):
+        logger = logging.getLogger(logger)
+    
+    logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)

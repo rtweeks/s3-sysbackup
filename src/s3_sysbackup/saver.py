@@ -36,6 +36,7 @@ from .snapshots import Snapshotter
 from .utils import (
     FileHasher,
     S3IntegrityHasher,
+    handler_on_logger,
     is_aws_error as _is_aws_error,
 )
 
@@ -248,31 +249,28 @@ class Saver:
         # Add a logging handler that records warnings+ into manifest
         log_accum_handler = _LogAccumHandler(manifest, 'log')
         log_accum_handler.setLevel(logging.WARNING)
-        logging.root.addHandler(log_accum_handler)
-        
-        for fpath in self._provider_paths('snapshots.d'):
-            try:
-                snapshotter.record_from(fpath)
-            except Exception as e:
-                _log.exception("trying to record from %s", fpath)
-        
-        for fpath in self._provider_paths('pickers.d'):
-            try:
-                for line in self._program_output_lines(fpath):
-                    try:
-                        quilter.add(line.strip())
-                    except TargetFileError as e:
-                        _log.error("%s", e)
-                    except Exception as  e:
-                        if _is_aws_error(e, 'AccessDenied'):
-                            raise
-                        _log.exception("trying to pick %s", line.strip())
-            except Exception as e:
-                _log.exception("trying to pick from %s", fpath)
-                if _is_aws_error(e, 'AccessDenied'):
-                    break
-        
-        logging.root.removeHandler(log_accum_handler)
+        with handler_on_logger(logging.root, log_accum_handler):
+            for fpath in self._provider_paths('snapshots.d'):
+                try:
+                    snapshotter.record_from(fpath)
+                except Exception as e:
+                    _log.exception("trying to record from %s", fpath)
+            
+            for fpath in self._provider_paths('pickers.d'):
+                try:
+                    for line in self._program_output_lines(fpath):
+                        try:
+                            quilter.add(line.strip())
+                        except TargetFileError as e:
+                            _log.error("%s", e)
+                        except Exception as  e:
+                            if _is_aws_error(e, 'AccessDenied'):
+                                raise
+                            _log.exception("trying to pick %s", line.strip())
+                except Exception as e:
+                    _log.exception("trying to pick from %s", fpath)
+                    if _is_aws_error(e, 'AccessDenied'):
+                        break
         
         try:
             manifest.update(
