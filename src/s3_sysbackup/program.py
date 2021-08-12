@@ -25,6 +25,7 @@ import re
 import sys
 from textwrap import dedent
 
+from . import __version__ as package_version
 from .resource_setup import DEFAULT_PACKAGE_NAME
 from .system_setup import DEFAULT_CONF_DIR, UnitsWriterDefaults
 from .utils import value
@@ -61,7 +62,8 @@ def get_argparser():
     
     parser.add_argument('-h', '--help', action=_MainProgramHelp,
                         help="Show this help message and exit")
-    
+    parser.add_argument('--version', action=_MainProgramVersion,
+                        help="Show the version of the package and exit")
     
     for subc in _subcommands:
         subc_parser = subc.argparser
@@ -96,6 +98,7 @@ class _MainProgramHelp(argparse.Action):
             "",
             "Optional arguments:",
             "    -h, --help    Show this help message",
+            "    --version     Show the version number of this package",
         ]
         print(
             '\n'.join(lines) % dict(prog=Path(sys.argv[0]).name),
@@ -110,6 +113,16 @@ class _MainProgramHelp(argparse.Action):
                 handler.command.rjust(command_cols),
                 (handler.__doc__ or '').split('\n')[0].strip(),
             )
+
+class _MainProgramVersion(argparse.Action):
+    def __init__(self, option_strings, dest, *, nargs=None, **kwargs):
+        if nargs not in (None, 0):
+            raise ValueError("'nargs' not allowed")
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+    
+    def __call__(self, *args, **kwargs):
+        print(__package__ + " " + package_version)
+        raise SystemExit(0)
 
 _subcommands = []
 def _subcommand(fn=None, **kwargs):
