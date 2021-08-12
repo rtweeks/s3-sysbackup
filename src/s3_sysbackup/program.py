@@ -25,6 +25,7 @@ import re
 import sys
 from textwrap import dedent
 
+from . import __version__ as package_version
 from .resource_setup import DEFAULT_PACKAGE_NAME
 from .system_setup import DEFAULT_CONF_DIR, UnitsWriterDefaults
 from .utils import value
@@ -61,7 +62,8 @@ def get_argparser():
     
     parser.add_argument('-h', '--help', action=_MainProgramHelp,
                         help="Show this help message and exit")
-    
+    parser.add_argument('--version', action=_MainProgramVersion,
+                        help="Show the version of the package and exit")
     
     for subc in _subcommands:
         subc_parser = subc.argparser
@@ -96,6 +98,7 @@ class _MainProgramHelp(argparse.Action):
             "",
             "Optional arguments:",
             "    -h, --help    Show this help message",
+            "    --version     Show the version number of this package",
         ]
         print(
             '\n'.join(lines) % dict(prog=Path(sys.argv[0]).name),
@@ -110,6 +113,16 @@ class _MainProgramHelp(argparse.Action):
                 handler.command.rjust(command_cols),
                 (handler.__doc__ or '').split('\n')[0].strip(),
             )
+
+class _MainProgramVersion(argparse.Action):
+    def __init__(self, option_strings, dest, *, nargs=None, **kwargs):
+        if nargs not in (None, 0):
+            raise ValueError("'nargs' not allowed")
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+    
+    def __call__(self, *args, **kwargs):
+        print(__package__ + " " + package_version)
+        raise SystemExit(0)
 
 _subcommands = []
 def _subcommand(fn=None, **kwargs):
@@ -178,10 +191,33 @@ with value(create_resources.argparser) as parser:
     )
 
 @_subcommand
+def update_resources(args):
+    """Update the AWS resources"""
+    from .resource_setup import ServiceResourceUpdater
+    
+    tool = ServiceResourceUpdater(**_ProgOptKwargs(args)
+        .incorporate('package_name')
+    )
+    tool.region_name = args.region_name
+    tool.stack_name = args.stack_name
+    tool.update_resources()
+with value(update_resources.argparser) as parser:
+    parser.add_argument(
+        '--cf-region', dest='region_name', action='store',
+        help="AWS region name in which the CloudFormation stack exists",
+    )
+    _CommonArgs.package_name(parser)
+    parser.add_argument(
+        '--stack-name', action='store',
+        help="Name of targeted CloudFormation stack"
+            " (defaults to the package name)",
+    )
+
+@_subcommand
 def write_config(args):
     """Write an archiving configuration for the local system"""
     from .resource_setup import create_user
-    from .system_setup import ConfigWriter, UnitsWriter, MulticonfigWriter
+    from .system_setup import ConfigWriter, UnitsWriter, CacheDeployer, MulticonfigWriter
     
     new_user = None
     try:
@@ -192,7 +228,7 @@ def write_config(args):
         if args.new_user:
             if not args.creds_file and args.save_new_credentials:
                 raise InvalidCommandLine(
-                    "Either specify an '--creds-file' or '--no-creds-file'"
+                    "Either specify a '--creds-file' or '--no-creds-file'"
                 )
             new_user = create_user(args.new_user, package_name=args.package_name)
             tool1.use_new_access_key(
@@ -223,7 +259,9 @@ def write_config(args):
         ).items():
             setattr(tool2, k, v)
         
-        MulticonfigWriter(tool1, tool2).configure_system()
+        tool3 = CacheDeployer()
+        
+        MulticonfigWriter(tool1, tool2, tool3).configure_system()
     except BaseException:
         if new_user:
             for g in new_user.groups.all():

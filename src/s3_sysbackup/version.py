@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-_nominal_version = "0.1.0"
+_nominal_version = "0.2.0"
 
 import os.path
 import subprocess
@@ -61,7 +61,7 @@ class VersionInfo:
     def _git_cmd_for_vtag(self, cmd_str, *, subp='call', **kwargs):
         try:
             return getattr(subprocess, subp)(
-                ["git"] + cmd_str.split() + [self.version_tag],
+                ["git", '-C', os.path.dirname(self.git_dir)] + cmd_str.split() + [self.version_tag],
                 **kwargs
             )
         except FileNotFoundError:

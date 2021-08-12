@@ -20,7 +20,7 @@
 import boto3 # package boto3
 from botocore.exceptions import ClientError as AwsError # package boto3
 from configparser import ConfigParser
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from getpass import getuser
 import gzip
 import json
@@ -36,6 +36,7 @@ from .snapshots import Snapshotter
 from .utils import (
     FileHasher,
     S3IntegrityHasher,
+    handler_on_logger,
     is_aws_error as _is_aws_error,
 )
 
@@ -248,31 +249,28 @@ class Saver:
         # Add a logging handler that records warnings+ into manifest
         log_accum_handler = _LogAccumHandler(manifest, 'log')
         log_accum_handler.setLevel(logging.WARNING)
-        logging.root.addHandler(log_accum_handler)
-        
-        for fpath in self._provider_paths('snapshots.d'):
-            try:
-                snapshotter.record_from(fpath)
-            except Exception as e:
-                _log.exception("trying to record from %s", fpath)
-        
-        for fpath in self._provider_paths('pickers.d'):
-            try:
-                for line in self._program_output_lines(fpath):
-                    try:
-                        quilter.add(line.strip())
-                    except TargetFileError as e:
-                        _log.error("%s", e)
-                    except Exception as  e:
-                        if _is_aws_error(e, 'AccessDenied'):
-                            raise
-                        _log.exception("trying to pick %s", line.strip())
-            except Exception as e:
-                _log.exception("trying to pick from %s", fpath)
-                if _is_aws_error(e, 'AccessDenied'):
-                    break
-        
-        logging.root.removeHandler(log_accum_handler)
+        with handler_on_logger(logging.root, log_accum_handler):
+            for fpath in self._provider_paths('snapshots.d'):
+                try:
+                    snapshotter.record_from(fpath)
+                except Exception as e:
+                    _log.exception("trying to record from %s", fpath)
+            
+            for fpath in self._provider_paths('pickers.d'):
+                try:
+                    for line in self._program_output_lines(fpath):
+                        try:
+                            quilter.add(line.strip())
+                        except TargetFileError as e:
+                            _log.error("%s", e)
+                        except Exception as  e:
+                            if _is_aws_error(e, 'AccessDenied'):
+                                raise
+                            _log.exception("trying to pick %s", line.strip())
+                except Exception as e:
+                    _log.exception("trying to pick from %s", fpath)
+                    if _is_aws_error(e, 'AccessDenied'):
+                        break
         
         try:
             manifest.update(
@@ -382,9 +380,31 @@ class _LogAccumHandler(logging.Handler):
         else:
             message = str(record.msg)
         
-        self.manifest.setdefault(self.key, []).append(dict(
-            at=record.asctime,
+        manlog_entry = dict(
+            at=datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             level=record.levelname,
             logger=record.name,
             message=message,
-        ))
+        )
+        
+        try:
+            if record.exc_info:
+                ex = record.exc_info[1]
+                dest = (manlog_entry, 'exception')
+                
+                while ex:
+                    ex_log = dest[0].setdefault(dest[1], {})
+                    ex_type = type(ex)
+                    if ex_type.__module__ == 'builtins':
+                        ex_tname = ex_type.__qualname__
+                    else:
+                        ex_tname = '.'.join([ex_type.__module__, ex_type.__qualname__])
+                    ex_log.update(excType=ex_tname, message=str(ex))
+                    if ex.__cause__:
+                        dest, ex = (ex_log, 'causedBy'), ex.__cause__
+                    else:
+                        dest, ex = (ex_log, 'whileHandling'), ex.__context__
+        except Exception:
+            pass
+        
+        self.manifest.setdefault(self.key, []).append(manlog_entry)

@@ -157,9 +157,57 @@ class ServiceResourceCreator:
             Capabilities=['CAPABILITY_NAMED_IAM'],
         )
 
+class ServiceResourceUpdater:
+    region_name = None
+    stack_name = None
+    
+    def __init__(self, package_name: str = DEFAULT_PACKAGE_NAME):
+        super().__init__()
+        self.package_name = package_name
+    
+    def update_resources(self, *, cf_resource=None):
+        resource_kwargs = {}
+        if self.region_name is not None:
+            resource_kwargs['region_name'] = self.region_name
+        cf = cf_resource or boto3.resource('cloudformation', **resource_kwargs)
+        
+        if self.stack_name:
+            stack = cf.Stack(self.stack_name)
+            if not any(
+                param['ParameterKey'] == 'PackageName'
+                and param['ParameterValue'] == self.package_name
+                for param in stack.parameters
+            ):
+                raise Exception("The stack's PackageName does not have the expected value")
+        else:
+            stack = cf.Stack(self.package_name)
+        
+        template = _read_template('resources')
+        
+        existing_params = set(
+            entry['ParameterKey']
+            for entry in stack.parameters
+        )
+        stack_params = []
+        for param_entry in _parameters_from_template(cf, template):
+            if param_entry['ParameterKey'] in existing_params:
+                stack_params.append(dict(
+                    ParameterKey=param_entry['ParameterKey'],
+                    UsePreviousValue=True,
+                ))
+        
+        return stack.update(
+            TemplateBody=template,
+            Parameters=stack_params,
+            Capabilities=['CAPABILITY_NAMED_IAM'],
+        )
+
 def _make_params(**kwargs):
     return list(
         dict(ParameterKey=k, ParameterValue=v)
         for k, v in kwargs.items()
         if v is not None
     )
+
+def _parameters_from_template(cf, template):
+    return cf.meta.client.get_template_summary(TemplateBody=template)['Parameters']
