@@ -117,6 +117,7 @@ def get_ownership(path: Path) -> dict:
         'g': numeric_fallback(grp.getgrgid, pstat.st_gid),
     }
 
+_ACL_MODE_MASK = (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX)
 @_debug_log
 def get_permissions(path: Path) -> dict:
     """Get filesystem entry permissions information (ACL or numeric mode)
@@ -125,12 +126,40 @@ def get_permissions(path: Path) -> dict:
     contains an ``'acl'`` entry; if :mod:`posix1e` is available, this is done
     in-process, falling back on invoking the `getfacl` program if not.
     
+    When ``'acl'`` is returned, an ``'sb'`` (for "special behavior") entry will
+    also be returned if the path is marked with SETUID, SETGID, or *sticky*
+    (i.e. SVTX) flags.  When given, the value in this entry will be a three
+    character :class:`str` given in the same style as ``getfacl``: the
+    character at index 0 represents SETUID, the character at index 1 represents
+    SETGID, and the character at index 2 indicates *sticky*, where each flag is
+    absent if the corresponding character is a ``-`` and present if a letter.
+    (Specifically, the letter ``s`` is used for SETUID and SETGID and ``t``
+    is used for *sticky*).
+    
     """
+    def get_mode() -> int:
+        return os.lstat(path)[stat.ST_MODE]
+    
+    def special_flags(mode: int) -> dict:
+        if not(mode & _ACL_MODE_MASK):
+            return {}
+        return dict(
+            sb=''.join(
+                f if mode & fbit else '-'
+                for f, fbit in (
+                    ('s', stat.S_ISUID),
+                    ('s', stat.S_ISGID),
+                    ('t', stat.S_ISVTX),
+                )
+            )
+        )
+    
     if ACL:
         acl = ACL(file=path).to_any_text()
         if isinstance(acl, bytes):
             acl = acl.decode('ascii')
-        return {'acl': acl}
+        mode = get_mode()
+        return {'acl': acl, **special_flags(mode)}
     
     # TODO: On Windows, use win32security to read the file's ACL
     
@@ -142,9 +171,9 @@ def get_permissions(path: Path) -> dict:
         except subp.CalledProcessError:
             pass
         else:
-            return {'acl': acl}
+            return {'acl': acl, **special_flags(get_mode())}
     
-    return {'mode': stat.S_IMODE(os.lstat(path)[stat.ST_MODE])}
+    return {'mode': stat.S_IMODE(get_mode())}
 
 @_debug_log
 def compresses_well(file: BinaryReadableFile) -> bool:
