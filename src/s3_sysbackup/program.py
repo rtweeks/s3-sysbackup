@@ -191,6 +191,29 @@ with value(create_resources.argparser) as parser:
     )
 
 @_subcommand
+def update_resources(args):
+    """Update the AWS resources"""
+    from .resource_setup import ServiceResourceUpdater
+    
+    tool = ServiceResourceUpdater(**_ProgOptKwargs(args)
+        .incorporate('package_name')
+    )
+    tool.region_name = args.region_name
+    tool.stack_name = args.stack_name
+    tool.update_resources()
+with value(update_resources.argparser) as parser:
+    parser.add_argument(
+        '--cf-region', dest='region_name', action='store',
+        help="AWS region name in which the CloudFormation stack exists",
+    )
+    _CommonArgs.package_name(parser)
+    parser.add_argument(
+        '--stack-name', action='store',
+        help="Name of targeted CloudFormation stack"
+            " (defaults to the package name)",
+    )
+
+@_subcommand
 def write_config(args):
     """Write an archiving configuration for the local system"""
     from .resource_setup import create_user
