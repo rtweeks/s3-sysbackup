@@ -29,7 +29,7 @@ from typing import Iterable, List, Tuple, Union as OneOf
 import unicodedata
 import warnings
 try:
-    from posix1e import ACL
+    from posix1e import ACL, TEXT_ABBREVIATE as ABBREV_ACL
 except ImportError:
     warnings.warn(
         "Unable to import 'posix1e' (from 'pylibacl' package); falling back on getfacl"
@@ -155,10 +155,18 @@ def get_permissions(path: Path) -> dict:
         )
     
     if ACL:
-        acl = ACL(file=path).to_any_text()
+        acl = ACL(file=path).to_any_text(options=ABBREV_ACL)
         if isinstance(acl, bytes):
             acl = acl.decode('ascii')
+        acl += '\n'
         mode = get_mode()
+        if stat.S_ISDIR(mode):
+            defacl = ACL(filedef=path).to_any_text(prefix='d:', options=ABBREV_ACL)
+            if isinstance(defacl, bytes):
+                defacl = defacl.decode('ascii')
+            defacl += '\n'
+            acl += defacl
+        acl += '\n'
         return {'acl': acl, **special_flags(mode)}
     
     # TODO: On Windows, use win32security to read the file's ACL
