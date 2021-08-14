@@ -23,6 +23,7 @@ The :class:`ConfigWriter` helps coordinate tasks that should be completed as
 a non-privileged user and those which require ``sudo`` access.
 """
 import builtins
+from collections.abc import Collection
 from colors import color as termstyle
 from configparser import ConfigParser
 import functools
@@ -34,7 +35,8 @@ import shlex
 import string
 import subprocess as subp
 import sys
-from typing import Optional, List, Union as OneOf
+import textwrap
+from typing import Iterable, Optional, List, Union as OneOf
 import warnings
 from . import resource_setup
 from .utils import (
@@ -517,6 +519,13 @@ class ConsoleUserInterface:
     _output = staticmethod(print)
     _input = staticmethod(input)
     
+    def explain(self, title: str, *info_paras: Iterable[str]):
+        """Explain to the user about the process about to occur"""
+        self._output(self.Style.interaction_title(title) + '\n')
+        line_width = min(os.get_terminal_size().columns, 120)
+        for para in info_paras:
+            self._output(textwrap.fill(para, line_width) + '\n')
+    
     def ask_for_sudo(self, commands: List[_SubprocCall]):
         """Ask the user for permission to run commands as root
         
@@ -537,7 +546,7 @@ class ConsoleUserInterface:
         self._output()
         
         # Test if console already has sudo
-        need_sudo = subp.run(
+        need_sudo = os.geteuid() != 0 and subp.run(
             ['sudo', '-vn'],
             stdin=subp.DEVNULL,
             stderr=subp.DEVNULL,
@@ -551,8 +560,55 @@ class ConsoleUserInterface:
                 )],
                 check=True,
             )
-        elif self._input(prompt_style("Execute (y/n)? ")).strip() not in self.ACCEPTED_AS_YES:
+        elif not self.yes_no("Execute", prompt_style):
             raise Exception("User canceled")
+    
+    def yes_no(self, prompt: str, style = None) -> bool:
+        """Ask the user a yes/no question"""
+        if style is None:
+            style = lambda x: x
+        response = self._input(style(prompt + " (y/n)? ")).strip()
+        return response in self.ACCEPTED_AS_YES
+    
+    def get_mfa_token_code(self) -> str:
+        """Ask the user for the code on their multi-factor authenticator (MFA)
+        
+        As the MFA code changes somewhat rapidly, this method should be called
+        just before the MFA token code is needed.
+        """
+        return self._input(self.Style.security_prompt(
+            "Enter MFA token code: "
+        ))
+    
+    def choose(self, title: str, options: Iterable[str]) -> str:
+        """Ask the user to choose one of the provided options"""
+        self._output(self.Style.interaction_title(title) + '\n')
+        options = list(options)
+        for i, opt in enumerate(options):
+            self._output("{} {}".format(
+                self.Style.menu_opt_id(str(i + 1) + ')'),
+                opt,
+            ))
+        self._output()
+        
+        selection = None
+        while selection is None:
+            try:
+                sel_input = self._input("Enter selection number: ")
+                selection = int(sel_input) - 1
+            except ValueError:
+                self._output(self.Style.error(
+                    "\"{}\" is not valid".format(sel_input)
+                ))
+                continue
+            
+            if selection not in range(len(options)):
+                selection = None
+                self._output(self.Style.error(
+                    "\"{}\" is not valid".format(sel_input)
+                ))
+        
+        return options[selection]
     
     def configure_password(self, cmd: 'PasswordRequired'):
         """Provide the password for a :class:`PasswordRequired` step
@@ -579,6 +635,71 @@ class ConsoleUserInterface:
         # *capture=* could be passed in this call
         cmd.run()
     
+    # With appreciation to https://stackoverflow.com/a/34325723/160072
+    class ProgressBar:
+        prefix = suffix = ''
+        decimals = 1
+        length = None
+        fill = '█'
+        printEnd = '\r'
+        
+        def __init__(self, total):
+            super().__init__()
+            self.total = total
+        
+        def print(self, iteration):
+            template = '{prefix} |{bar}| {percent} {suffix}'
+            
+            if self.length is None:
+                length = os.get_terminal_size().columns - len(
+                    template.format(
+                        prefix=self.prefix,
+                        suffix=self.suffix,
+                        bar='',
+                        percent=self.percent_str(1),
+                    )
+                )
+            else:
+                length = self.length
+            
+            percent = self.percent_str(
+                max(
+                    0,
+                    min(
+                        1,
+                        iteration / float(self.total)
+                    )
+                )
+            )
+            filledLength = int(length * iteration // self.total)
+            bar = self.fill * filledLength + '─' * (length - filledLength)
+            print(
+                template.format(
+                    prefix=self.prefix,
+                    suffix=self.suffix,
+                    bar=bar,
+                    percent=percent,
+                ),
+                end=self.printEnd,
+            )
+            if iteration >= self.total:
+                print()
+        
+        def percent_str(self, fraction):
+            return ("{0:." + str(self.decimals) + "f}").format(100 * fraction) + '%'
+    
+    def visible_progress(self, items: Collection, *, prefix='', suffix=''):
+        if sys.stdout.isatty():
+            bar = self.ProgressBar(len(items))
+            bar.prefix = prefix
+            bar.suffix = suffix
+            bar.print(0)
+            for i, item in enumerate(items):
+                yield item
+                bar.print(i + 1)
+        else:
+            yield from items
+
     class Style:
         @classmethod
         def interaction_title(cls, s: str) -> str:
@@ -594,6 +715,14 @@ class ConsoleUserInterface:
         @classmethod
         def security_prompt(cls, s: str) -> str:
             return termstyle(s, fg='yellow', style='bold')
+        
+        @classmethod
+        def menu_opt_id(cls, s: str) -> str:
+            return termstyle(s, fg='white', style='bold')
+        
+        @classmethod
+        def error(cls, s: str) -> str:
+            return termstyle(s, fg='white', bg='red', style='bold')
 
 class PasswordRequired:
     password = None # Put the password here if command line input is not desirable

@@ -24,6 +24,17 @@ When this subcommand is used to create an IAM account for uploading backup data,
 
 The `archive` subcommand is the workhorse of this backup system: it evaluates which data needs to be sent up to S3, manages object retention periods, and builds the backup manifests for each run.  This subcommand is typically invoked by a `systemd` "timer" unit on a daily basis.
 
+### The `restore` Subcommand
+
+If a system needs to be restored from a previous backup, then the `restore` subcommand is the tool to use.  In order to use this tool, you first need to install the tool on the target system, and that requires a Python 3.6+ environment including the `venv` module.  Please see the [wiki page](https://github.com/rtweeks/s3-sysbackup/wiki/Installing-a-Python-Environment) for documentation on how to accomplish this on various systems.
+
+Once the basics are installed on the system, run:
+```console
+s3-sysbackup restore --help
+```
+
+One challenge for a user attempting to restore a backup to a *fresh* machine is credentialed access to the AWS API: by definition, this machine is not a machine the user typically uses to access AWS and therefore will not have IAM access credentials installed.  Transfer of credentials between machines is fraught with opportunities for accidentally disclosing the credentials, including the possibility of leaving the unencrypted credentials on the machine after the backup is restored.
+
 ## Configuration
 
 `s3-sysbackup` configuration lives in a directory structure on disk, with the default location being `/etc/backup`.  Within the directory there must be a `conf` file, which is in Python [*configparser*][configparser] format.  Backup strategies, as detailed below, each have their own subdirectory of the configuration directory.

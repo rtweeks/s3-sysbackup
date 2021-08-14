@@ -182,6 +182,13 @@ Resources:
               - 's3:GetObjectVersion'
             Resource:
               - {'Fn::Sub': "${Bucket.Arn}/*"}
+          - Effect: Allow
+            Action:
+              - 'cloudformation:ListExports'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'aws:RequestedRegion': {Ref: 'AWS::Region'}
   
   RestoreRole:
     # REQUIRES (on stack creation/update): CAPABILITY_NAMED_IAM

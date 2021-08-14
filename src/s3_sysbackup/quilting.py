@@ -112,9 +112,11 @@ class Quilter(BackupFacilitator):
         self._include_directories(fpath)
         
         with _FileContentHandler(self) as content_handler:
+            _log.debug("processing content of %r", fpath)
             with self._open_target_file(fpath) as origf:
                 content_handler.prep_content(origf, lock_timeout=self.lock_timeout)
             
+            _log.debug("content of %r processed, ensuring presence in bucket", fpath)
             self.manifest[fpath] = content_handler.save_to_bucket()
     
     def get_manifest_jsonl_lines(self, *, as_str: bool = True):
@@ -414,12 +416,15 @@ class _FileContentHandler:
             
             self.version_id = self._get_existing_version_id()
             if self.version_id is None:
+                _log.info("%r not found in bucket", self.content_key)
                 raise _NoExistingVersion
             
             if self._local_record_shows_adequate_retention():
+                _log.info("Local database shows %r as retained in S3", self.content_key)
                 raise _AdequateRetentionExists
             
             if self._s3_shows_adequate_retention():
+                _log.info("S3 versioning metadata shows %r as retained in S3", self.content_key)
                 raise _AdequateRetentionExists
             
             self._extend_retention_of_existing_version()
@@ -570,6 +575,10 @@ class _FileContentHandler:
                 self.version_id,
                 expiration.timestamp(),
             )).close()
+        
+        # TODO: Send a version id record to self.quilter so
+        # self.quilter._get_content_version_records returns a valid ID if this
+        # content shows up again (see _get_existing_version_id above)
     
     def _ensure_retention_table(self, ):
         conn = _get_db_conn()

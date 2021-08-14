@@ -18,7 +18,10 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import argparse
+from bisect import bisect_left
+from colors import color as termstyle
 import functools
+import math
 import os
 from pathlib import Path
 import re
@@ -30,14 +33,36 @@ from .resource_setup import DEFAULT_PACKAGE_NAME
 from .system_setup import DEFAULT_CONF_DIR, UnitsWriterDefaults
 from .utils import value
 
+import logging
+_log = logging.getLogger(__name__)
+
 USE_SYS_ARGV = object()
 
 def main(args=USE_SYS_ARGV, *, exit_error=SystemExit):
     if args is USE_SYS_ARGV:
         args = sys.argv[1:]
     
+    severe_log_displayer = logging.StreamHandler()
+    severe_log_displayer.setLevel(logging.WARNING)
+    severe_log_displayer.setFormatter(ColoringFormatter(
+        ({}, '%(asctime)s '),
+        (dict(byLevel=True), '%(levelname)-5.5s'),
+        (dict(fg='blue', style='faint'), ' %(name)s'),
+        ({}, ' %(message)s'),
+    ))
+    logging.root.addHandler(severe_log_displayer)
+    
     if isinstance(args, (list, tuple)):
         args = get_argparser().parse_args(args)
+    
+    log_file = getattr(args, 'log_file', None)
+    if log_file:
+        log_saver = logging.FileHandler(log_file)
+        log_saver.setLevel(logging.DEBUG)
+        log_saver.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)-5.5s [%(name)s] %(message)s',
+        ))
+        logging.root.addHandler(log_saver)
     
     handler = (
         getattr(args, 'handler', None)
@@ -64,6 +89,10 @@ def get_argparser():
                         help="Show this help message and exit")
     parser.add_argument('--version', action=_MainProgramVersion,
                         help="Show the version of the package and exit")
+    parser.add_argument('--log', action=_ConfigureLogging, metavar='LOG-CONFIG-LIST',
+                        help="Configure logging levels")
+    parser.add_argument('--log-to', action='store', dest='log_file',
+                        help="Set a log file")
     
     for subc in _subcommands:
         subc_parser = subc.argparser
@@ -99,6 +128,12 @@ class _MainProgramHelp(argparse.Action):
             "Optional arguments:",
             "    -h, --help    Show this help message",
             "    --version     Show the version number of this package",
+            "    --log LOG-CONFIG-LIST",
+            "                  Configure Python logger levels",
+            "                  (NAME=VALUE[,NAME=VALUE[...]]);",
+            "                  this option may appear multiple times",
+            "    --log-to PATH",
+            "                  Send all logged messages to PATH",
         ]
         print(
             '\n'.join(lines) % dict(prog=Path(sys.argv[0]).name),
@@ -123,6 +158,58 @@ class _MainProgramVersion(argparse.Action):
     def __call__(self, *args, **kwargs):
         print(__package__ + " " + package_version)
         raise SystemExit(0)
+
+LOG_SETTING_PATTERN = re.compile(r'(?P<name>[^=]*)=(?:(?P<levelno>\d+)|(?P<levelname>DEBUG|INFO|WARNING|ERROR|CRITICAL))')
+class _ConfigureLogging(argparse.Action):
+    def __init__(self, option_strings, dest, nargs=None, **kwargs):
+        if nargs not in (None, 1):
+            raise ValueError("'nargs' must be 1 if given")
+        super().__init__(option_strings, dest, nargs=1, **kwargs)
+    
+    def __call__(self, parser, result, values, option_string=None):
+        for setting in values[0].split(','):
+            m = LOG_SETTING_PATTERN.search(setting)
+            if m:
+                if m.group('levelno'):
+                    level = int(m.group('levelno'))
+                else:
+                    level = m.group('levelname')
+                logger = logging.getLogger(m.group('name'))
+                logger.setLevel(level)
+            else:
+                raise ValueError("Invalid logging setting %r" % (setting,))
+
+class ColoringFormatter(logging.Formatter):
+    LEVEL_STYLES = [
+        (logging.DEBUG, dict(fg='green')),
+        (logging.INFO, dict(fg='blue')),
+        (logging.WARNING, dict(fg='yellow')),
+        (logging.ERROR, dict(fg='red')),
+        (math.inf, dict(fg='red', bg='yellow', style='faint')),
+    ]
+    LEVEL_STYLE_INDEX = sorted((l, i) for i, (l, s) in enumerate(LEVEL_STYLES))
+    
+    def __init__(self, *segments, use_color=True, **kwargs):
+        super().__init__(''.join(s[1] for s in segments), **kwargs)
+        self.use_color = use_color
+        self.segments = segments
+    
+    def formatMessage(self, record):
+        if self.use_color:
+            fmt = ''.join(
+                self._colorfmt(*s, record) for s in self.segments
+            )
+        else:
+            fmt = ''.join(s[1] for s in self.segments)
+        return fmt % record.__dict__
+    
+    def _colorfmt(self, style, sfmt, record):
+        if style.pop('byLevel', False):
+            style.update(style='bold')
+            si = find_ge(self.LEVEL_STYLE_INDEX, (record.levelno, 0))[1]
+            style.update(self.LEVEL_STYLES[si][1])
+        
+        return termstyle(sfmt, **style)
 
 _subcommands = []
 def _subcommand(fn=None, **kwargs):
@@ -156,6 +243,27 @@ class _CommonArgs:
             '--conf-dir', action='store', default=DEFAULT_CONF_DIR,
             help="Explicitly specify path to local system configuration",
         )
+    
+    @classmethod
+    def cf_region(cls, parser, help):
+        parser.add_argument(
+            '--cf-region', dest='region_name', action='store',
+            help=help,
+        )
+    
+    @classmethod
+    def stack_name(cls, parser, help):
+        parser.add_argument(
+            '--stack-name', action='store',
+            help=help,
+        )
+    
+    @classmethod
+    def cf_export(cls, parser, help, **kwargs):
+        parser.add_argument(
+            '--export', dest='bucket_export', action='store',
+            help=help, **kwargs,
+        )
 
 def wallclock_time(s: str) -> str:
     from .system_setup import check_systemd_calendar_spec
@@ -175,18 +283,15 @@ def create_resources(args):
     tool.bucket_export = args.bucket_export
     tool.create_resources()
 with value(create_resources.argparser) as parser:
-    parser.add_argument(
-        '--cf-region', dest='region_name', action='store',
+    _CommonArgs.cf_region(parser,
         help="AWS region name in which to create the CloudFormation stack",
     )
     _CommonArgs.package_name(parser)
-    parser.add_argument(
-        '--stack-name', action='store',
+    _CommonArgs.stack_name(parser,
         help="Name for CloudFormation stack"
             " (defaults to the package name)",
     )
-    parser.add_argument(
-        '--export', dest='bucket_export', action='store',
+    _CommonArgs.cf_export(parser,
         help="Explicit export name with which to export the created bucket name",
     )
 
@@ -202,13 +307,12 @@ def update_resources(args):
     tool.stack_name = args.stack_name
     tool.update_resources()
 with value(update_resources.argparser) as parser:
-    parser.add_argument(
-        '--cf-region', dest='region_name', action='store',
+    _CommonArgs.cf_region(
+        parser,
         help="AWS region name in which the CloudFormation stack exists",
     )
     _CommonArgs.package_name(parser)
-    parser.add_argument(
-        '--stack-name', action='store',
+    _CommonArgs.stack_name(parser,
         help="Name of targeted CloudFormation stack"
             " (defaults to the package name)",
     )
@@ -335,6 +439,46 @@ def archive(args):
 with value(archive.argparser) as parser:
     _CommonArgs.conf_dir(parser)
 
+@_subcommand
+def restore(args):
+    """Download a backup manifest and restore files and data"""
+    from .restorer import Restorer
+    tool = Restorer(
+        args.backup,
+    )
+    if args.bucket:
+        tool.bucket = args.bucket
+    if args.region_name:
+        tool.bucket_export = (args.region_name, args.bucket_export)
+    tool.find_bucket()
+    tool.use_mfa = args.use_mfa
+    tool.run()
+with value(restore.argparser) as parser:
+    _CommonArgs.cf_region(
+        parser,
+        help="AWS region containing the CloudFormation stack exporting the bucket name",
+    )
+    _CommonArgs.cf_export(parser, default='backup-bucket',
+        help="Name of the CloudFormation export containing the bucket name",
+    )
+    parser.add_argument(
+        '--bucket', action='store',
+        help="Name of the S3 bucket containing the backup data",
+    )
+    with value(parser.add_mutually_exclusive_group()) as mfa_group:
+        mfa_group.add_argument(
+            '--mfa', action='store_true', dest='use_mfa',
+            help="Use multi-factor authentication for accessing backup data",
+        )
+        mfa_group.add_argument(
+            '--mfa-device', action='store', dest='use_mfa', metavar='SERIAL-NUM-OR-ARN',
+            help="Use a specific multi-factor authenticator for accessing backup data",
+        )
+    parser.add_argument(
+        'backup', action='store', nargs='?',
+        help="Name of backup to restore",
+    )
+
 class _ProgOptKwargs(dict):
     def __init__(self, program_args):
         super().__init__()
@@ -346,6 +490,13 @@ class _ProgOptKwargs(dict):
             if opt_value is not None:
                 self[opt_name] = opt_value
         return self
+
+def find_ge(a, x):
+    'Find leftmost item greater than or equal to x'
+    i = bisect_left(a, x)
+    if i != len(a):
+        return a[i]
+    raise ValueError
 
 class InvalidCommandLine(Exception):
     """Raised when the command line is invalid"""
