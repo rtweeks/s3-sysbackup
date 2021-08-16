@@ -43,6 +43,7 @@ from . import resource_setup
 from .utils import (
     as_attr,
     namedtuple_def,
+    PASSWORD_POLICY,
 )
 
 import logging
@@ -641,9 +642,16 @@ class ConsoleUserInterface:
         elif verify is True:
             verify = default_verify
         
-        password = getpass(prompt)
-        if is_new:
-            pass # TODO: Check password strength
+        password = None
+        while password is None:
+            password = getpass(prompt)
+            if is_new:
+                weaknesses = PASSWORD_POLICY.test(password)
+                if weaknesses:
+                    password = None
+                    for weakness in weaknesses:
+                        print("  * Not enough", weakness.name())
+                    print("*** Password must be", PASSWORD_POLICY.description, "***")
         
         if verify:
             second_entry = None

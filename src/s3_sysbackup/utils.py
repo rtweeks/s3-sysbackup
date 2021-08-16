@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 import functools
 import hashlib
 import inspect
+import password_strength
 import socket
 from typing import Optional, Union as OneOf
 
@@ -238,3 +239,10 @@ def handler_on_logger(
         yield
     finally:
         logger.removeHandler(handler)
+
+PASSWORD_POLICY = password_strength.PasswordPolicy.from_names(
+    length=10,
+    uppercase=2,
+    strength=0.6,
+)
+PASSWORD_POLICY.description = 'at least 10 characters, two uppercase, and strong'

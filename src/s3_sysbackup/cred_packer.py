@@ -60,7 +60,7 @@ class CredPacker:
         )
         
         # Query user for password
-        password = self.ui.get_password(verify=True)
+        password = self.ui.get_password(is_new=True)
         
         # Encrypt credentials as JSON for boto3.Session kwargs in .cred_pack_asn1.Envelope
         pack = Envelope.new(kdwork_params, AES_256_CBC_Params.new())
