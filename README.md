@@ -16,7 +16,7 @@ The created resources are organized into a "package," which by default has the n
 
 ### The `write-config` Subcommand
 
-This writes a configuration file (and possibly a credentials file) for use by `s3-sysbackup archive`.  It also writes unit files for `systemd` so the archiver will run on a daily basis.  This command can create an IAM user for the backup system to authenticate to AWS as, using the IAM resources created by `s3-sysbackup create-resources` to strictly limit the capabilities of the account.
+This writes a configuration file (and possibly a credentials file) for use by `s3-sysbackup archive`.  It also writes unit files for `systemd` so the archiver will run on a daily basis.  This command can create an IAM user for the backup system to authenticate as to AWS, using the IAM resources created by `s3-sysbackup create-resources` to strictly limit the capabilities of the account.
 
 When this subcommand is used to create an IAM account for uploading backup data, it can save those credentials in an encrypted file for transfer to and use on another system.  Creating this encrypted file requires the presence of the `ccrypt` program on the system.  Since this encryption only supports a single password, if you need to share the encrypted credentials with another user, *do not* use your own account password (either system password or AWS password).
 
@@ -33,7 +33,13 @@ Once the basics are installed on the system, run:
 s3-sysbackup restore --help
 ```
 
-One challenge for a user attempting to restore a backup to a *fresh* machine is credentialed access to the AWS API: by definition, this machine is not a machine the user typically uses to access AWS and therefore will not have IAM access credentials installed.  Transfer of credentials between machines is fraught with opportunities for accidentally disclosing the credentials, including the possibility of leaving the unencrypted credentials on the machine after the backup is restored.
+One challenge for a user attempting to restore a backup to a *fresh* machine is credentialed access to the AWS API: by definition, this machine is not a machine the user typically uses to access AWS and therefore will not have IAM access credentials installed.  Transfer of credentials between machines is fraught with opportunities for accidentally disclosing the credentials, including the possibility of leaving the unencrypted credentials on the machine after the backup is restored.  The `pack-creds` subcommand, along with the `--creds` option to this subcommand, is `s3-sysbackup`'s solution to this problem.
+
+### The `pack-creds` Subcommand
+
+Getting AWS IAM user credentials to a fresh machine *securely* is a challenge.  `s3-sysbackup` provides a utility command to take the credentials in use and encrypt them under a password into a file.  The hashing of the password given into an encryption key intentionally demands a large amount of work for the machine, so brute force attacks on the encrypted file (were it lost) are infeasible.  Use this subcommand to put the encrypted credentials package on a thumbdrive, EFS volume, or whatever other method of transfer to the fresh machine is appropriate -- though ideally, *not* in a place where it would be arbitrarily available to just anyone.  When using the `restore` subcommand, employ the `--creds` option with the path to the encrypted credentials package.
+
+An additional advantage of using an encrypted credentials package is that the restoring user's credentials never have to be unencrypted in a file on the target machine.  Often, the restoring user is not a typical user on that machine; putting the credentials on the machine in an unencrypted file (even unintentionally, like in a `bash` history file) might compromise the credentials.  Since this system has `s3-sysbackup` itself decrypt the file, there are few ways the credentials could be persisted in cleartext on the target system.
 
 ## Configuration
 
