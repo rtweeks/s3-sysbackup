@@ -277,6 +277,8 @@ class _FilePrepStream:
         
         @property
         def compression_ratio(self):
+            if self.input_byte_count == 0:
+                return 0
             return 1 - (self.output_byte_count / self.input_byte_count)
     
     @property
@@ -382,6 +384,7 @@ class _FileContentHandler:
         with backup_flock(origf, lock_timeout) as read_lock:
             self.locked_for_read = read_lock.obtained
             self.content_info = ci = _FilePrepStream(origf).stream_to(self.backup_content.write)
+        self.backup_content.flush()
         self.backup_content.seek(0)
         
         if ci.content_compressed:
@@ -395,11 +398,19 @@ class _FileContentHandler:
                 ci.compression_ratio * 100,
             )
         
-        self.content_key = "content/" + ci.content_hexdigest
-        _log.info("Content key for %r: %s", self.fpath, self.content_key)
+        if ci.input_byte_count == 0:
+            self.content_key = None
+            _log.info("%r is empty")
+        else:
+            self.content_key = "content/" + ci.content_hexdigest
+            _log.info("Content key for %r: %s", self.fpath, self.content_key)
     
     def save_to_bucket(self, ):
         try:
+            if self.content_key is None:
+                self.version_id = None
+                raise _AdequateRetentionExists
+            
             self.version_id = self._get_existing_version_id()
             if self.version_id is None:
                 raise _NoExistingVersion
