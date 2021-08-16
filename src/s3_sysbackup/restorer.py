@@ -31,8 +31,9 @@ import socket
 import sys
 import tempfile
 from typing import Iterable, Optional, Union as OneOf
+from unicodedata import normalize as unorm
 
-from . import resource_setup
+from . import resource_setup, cred_pack_asn1 as cred_pack
 from .system_setup import ConsoleUserInterface, _subproc_call
 from .utils import namedtuple_def
 
@@ -55,12 +56,14 @@ class Restorer:
         backup_name: Optional[str] = None,
         *,
         aws_account: OneOf[None, str, int] = None,
+        creds_filepath: Optional[str] = None,
         package_name: Optional[str] = None,
         ui = None,
     ):
         super().__init__()
         self.backup_name = backup_name
         self.aws_account = aws_account
+        self.creds_filepath = creds_filepath
         self.package_name = package_name or resource_setup.DEFAULT_PACKAGE_NAME
         self.ui = ConsoleUserInterface() if ui is None else ui
     
@@ -190,7 +193,15 @@ class Restorer:
     def assume_restore_role(self, ):
         if not hasattr(self, 'cred') or self.cred_expires < datetime.now(timezone.utc):
             session_kwargs = {}
-            # TODO: Decrypt credentials if encrypted credentials were specified
+            
+            if self.creds_filepath is not None:
+                with open(self.creds_filepath, 'rb') as credfile:
+                    envelope = cred_pack.Envelope.load(credfile.read(4096))
+                creds_json = envelope.ciphertext(cred_pack.password_bytes(
+                    self.ui.get_password("Password for credentials: ")
+                )).get()
+                session_kwargs.update(json.loads(creds_json))
+            
             aws = boto3.Session(**session_kwargs)
             
             iam = aws.resource('iam')

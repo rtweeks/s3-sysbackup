@@ -459,6 +459,9 @@ def restore(args):
     from .restorer import Restorer
     tool = Restorer(
         args.backup,
+        **_ProgOptKwargs(args)
+        .incorporate('package_name')
+        .incorporate('creds_filepath')
     )
     if args.bucket:
         tool.bucket = args.bucket
@@ -472,12 +475,17 @@ with value(restore.argparser) as parser:
         parser,
         help="AWS region containing the CloudFormation stack exporting the bucket name",
     )
+    _CommonArgs.package_name(parser)
     _CommonArgs.cf_export(parser, default='backup-bucket',
         help="Name of the CloudFormation export containing the bucket name",
     )
     parser.add_argument(
         '--bucket', action='store',
         help="Name of the S3 bucket containing the backup data",
+    )
+    parser.add_argument(
+        '--creds', action='store', dest='creds_filepath', metavar='FILEPATH',
+        help="Path to credentials package file (from 'pack-creds')",
     )
     with value(parser.add_mutually_exclusive_group()) as mfa_group:
         mfa_group.add_argument(

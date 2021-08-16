@@ -23,9 +23,13 @@ import json
 import math
 import os
 import time
-from unicodedata import normalize as str_norm
 
-from .cred_pack_asn1 import Envelope, ScryptParams, AES_256_CBC_Params
+from .cred_pack_asn1 import (
+    Envelope,
+    ScryptParams,
+    AES_256_CBC_Params,
+    password_bytes,
+)
 from .system_setup import ConsoleUserInterface
 
 class CredPacker:
@@ -60,7 +64,7 @@ class CredPacker:
         
         # Encrypt credentials as JSON for boto3.Session kwargs in .cred_pack_asn1.Envelope
         pack = Envelope.new(kdwork_params, AES_256_CBC_Params.new())
-        pack.ciphertext(str_norm('NFKC', password).encode('utf-8')).set(
+        pack.ciphertext(password_bytes(password)).set(
             json.dumps(dict(
                 aws_access_key_id=creds.access_key,
                 aws_secret_access_key=creds.secret_key,

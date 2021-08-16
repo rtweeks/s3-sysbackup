@@ -23,7 +23,7 @@ from Crypto.Util import Padding
 import hashlib
 import os
 import typing as t
-
+from unicodedata import normalize as str_norm
 
 class Envelope(Sequence):
     _fields = [
@@ -51,6 +51,9 @@ class Envelope(Sequence):
     
     def ciphertext(self, password: bytes) -> '_Encrypted':
         return _Encrypted(self, self.derive_key(password))
+
+def password_bytes(password: str) -> bytes:
+    return str_norm('NFKD', password).encode('utf-8')
 
 class _Encrypted:
     def __init__(self, envelope: Envelope, key: bytes):
