@@ -440,6 +440,20 @@ with value(archive.argparser) as parser:
     _CommonArgs.conf_dir(parser)
 
 @_subcommand
+def pack_creds(args):
+    """Pack AWS credentials in a password-protected file
+    
+    This is typically useful for securely transferring your current AWS CLI
+    credentials onto a machine for the purpose of restoring a system.
+    """
+    from .cred_packer import CredPacker
+    tool = CredPacker(args.dest_path)
+    tool.run()
+with value(pack_creds.argparser) as parser:
+    parser.add_argument("dest_path", type=argparse.FileType('wb'), metavar='DEST-PATH',
+                        help="Where the packed credentials are written")
+
+@_subcommand
 def restore(args):
     """Download a backup manifest and restore files and data"""
     from .restorer import Restorer

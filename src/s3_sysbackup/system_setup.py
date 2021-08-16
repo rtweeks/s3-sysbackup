@@ -27,6 +27,7 @@ from collections.abc import Collection
 from colors import color as termstyle
 from configparser import ConfigParser
 import functools
+from getpass import getpass
 import io
 import itertools
 import os
@@ -622,6 +623,34 @@ class ConsoleUserInterface:
         a password is made.
         """
         pass # Nah, we'll let the program get the password from the console
+    
+    def get_password(
+        self,
+        prompt=None,
+        *,
+        is_new: bool = False,
+        verify: OneOf[str, bool, None] = None,
+    ) -> str:
+        """Ask the user to enter a password"""
+        if prompt is None:
+            prompt = "Enter password: "
+        
+        default_verify = "Re-enter password to verify: "
+        if verify is None:
+            verify = default_verify if is_new else False
+        elif verify is True:
+            verify = default_verify
+        
+        password = getpass(prompt)
+        if is_new:
+            pass # TODO: Check password strength
+        
+        if verify:
+            second_entry = None
+            while second_entry != password:
+                second_entry = getpass(verify)
+        
+        return password
     
     def run_command(self, cmd: _SubprocCall):
         """Execute the given command
