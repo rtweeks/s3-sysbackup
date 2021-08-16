@@ -386,14 +386,14 @@ class _FileContentHandler:
         
         if ci.content_compressed:
             _log.info("gzip-compressed content from %r", self.fpath)
-        self.extra_args['Metadata']['storage-encoding'] = 'gzip'
-        if _log.isEnabledFor(logging.INFO):
-            _log.info(
-                "Compressed %d bytes to %d bytes (%.1f%%)",
-                ci.input_byte_count,
-                ci.output_byte_count,
-                ci.compression_ratio * 100,
-            )
+            self.extra_args['Metadata']['storage-encoding'] = 'gzip'
+            if _log.isEnabledFor(logging.INFO):
+                _log.info(
+                    "Compressed %d bytes to %d bytes (%.1f%%)",
+                    ci.input_byte_count,
+                    ci.output_byte_count,
+                    ci.compression_ratio * 100,
+                )
         
         self.content_key = "content/" + ci.content_hexdigest
         _log.info("Content key for %r: %s", self.fpath, self.content_key)
