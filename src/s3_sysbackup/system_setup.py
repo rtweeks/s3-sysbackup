@@ -644,7 +644,7 @@ class ConsoleUserInterface:
         
         password = None
         while password is None:
-            password = getpass(prompt)
+            password = (getpass_new if is_new else getpass)(prompt)
             if is_new:
                 weaknesses = PASSWORD_POLICY.test(password)
                 if weaknesses:
@@ -877,3 +877,10 @@ class _EncryptedUserCredentialWriter(_CcryptCommand):
         self._passing_password_in_env(result, password)
         
         return result
+
+try:
+    from . import new_password
+except ModuleNotFoundError:
+    getpass_new = getpass
+else:
+    getpass_new = new_password.main
